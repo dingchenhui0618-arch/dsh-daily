@@ -43,6 +43,9 @@ function goodReply() {
       // never inspected, so this one must NOT also bump the boilerplate count.
       improvement('evil/hallucinated', { title: 'dsh-evil-guard', why: '这个插件很强大，值得一试' }),
     ],
+    ideas: [
+      { title: 'dsh-queue', oneLiner: '把日报变成可执行的开发队列', gap: 'acme/dsh-alpha 只做了一半', evidence: 'acme/dsh-alpha', effort: '1天' },
+    ],
     notes: '今天四条候选，一条够格。',
   })
 }
@@ -172,6 +175,7 @@ function setup(options) {
     corpusPath: corpusPath,
     maxCandidates: 10,
     maxImprovements: 5,
+    maxIdeas: 2,
     seedCorpus: join(home, 'no-such-seed.csv'),
   }, opts.config)
 
@@ -248,6 +252,7 @@ test('GET state reports config and status before any run', async () => {
   assert.equal(state.status, 200)
   assert.equal(state.body.config.hour, 11)
   assert.equal(state.body.config.maxImprovements, 5)
+  assert.equal(state.body.config.maxIdeas, 2)
   assert.equal(state.body.status.running, false)
   assert.equal(state.body.today, undefined)
 })
@@ -270,6 +275,9 @@ test('a run writes a report whose improvements all anchor on corpus repos', asyn
   assert.equal(report.dropped.boilerplateWhy, 1)
   assert.equal(report.dropped.noWhy, 0)
   assert.equal(report.dropped.sameName, 0)
+  assert.equal(report.ideas.length, 1)
+  assert.equal(report.ideas[0].title, 'dsh-queue')
+  assert.equal(report.ideas[0].verified, true)
   assert.equal(report.model, 'test-provider/test-model')
   assert.equal(report.corpus.total, 4)
   assert.equal(report.trigger, 'manual')
@@ -330,6 +338,7 @@ test('a reply that is not JSON yields an empty report rather than inventing one'
   await runAndWait(built)
   const report = readReport(built)
   assert.deepEqual(report.improvements, [])
+  assert.deepEqual(report.ideas, [])
   assert.equal(report.parsed, false)
   // The reply must be kept and the failure surfaced: an empty report that reads
   // as "nothing good today" would hide a broken generation.
@@ -368,6 +377,30 @@ test('a reply truncated by the token budget is a failure, not a quiet day', asyn
   assert.equal(state.body.today.parsed, false)
   assert.equal(state.body.today.reply.finish, 'length')
   assert.equal(state.body.today.reply.chars, 17)
+})
+
+test('an idea proposed once is fed back so it is not proposed again', async () => {
+  const built = setup()
+  await runAndWait(built)
+  await runAndWait(built)
+  const second = built.prompts[1].messages[0].content[0].text
+  assert.ok(second.includes('这些方向你已经提过了'), 'past ideas must reach the prompt')
+  assert.ok(second.includes('- dsh-queue'))
+})
+
+test('approving an idea hands over the new-direction contract', async () => {
+  const built = setup()
+  await runAndWait(built)
+  const result = await call(built, 'POST', '/dsh-daily/approve', { title: 'dsh-queue' })
+  assert.equal(result.status, 200)
+  assert.equal(result.body.delivered, true)
+  const text = built.followups[0].content[0].text
+  assert.ok(text.includes('## 已批准的方向'))
+  assert.ok(text.includes('dsh-queue'))
+  // Same hard gates as an improvement.
+  assert.ok(text.includes('独立实现，不要 fork'))
+  assert.ok(text.includes('绝对不要推送'))
+  assert.ok(!text.includes('原版（别人已发布的）'), 'an idea has no source repo to credit')
 })
 
 test('approving an unknown target is refused', async () => {

@@ -81,6 +81,32 @@ function Card(props) {
   return h('div', { className: 'dd-card ' + props.kind }, props.children)
 }
 
+function IdeaCard(props) {
+  const idea = props.idea
+  return h(Card, { kind: 'dd-idea' },
+    h('div', { className: 'dd-row1' },
+      h('span', { className: 'dd-name' }, idea.title || '(未命名)'),
+      idea.verified
+        ? h('span', { className: 'dd-badge dd-ok' }, '证据已核实')
+        : h('span', { className: 'dd-badge dd-warn' }, '未经证实'),
+      h('div', { className: 'dd-actions' },
+        h('button', {
+          className: 'dd-btn dd-primary',
+          type: 'button',
+          disabled: props.busy,
+          onClick: function () { props.onApprove({ title: idea.title }) },
+        }, props.busy ? '投递中…' : '做这个'),
+      ),
+    ),
+    h('div', { className: 'dd-line' }, idea.oneLiner),
+    h('div', { className: 'dd-line' }, h('span', { className: 'dd-k' }, '缺口：'), idea.gap),
+    h('div', { className: 'dd-line' },
+      h('span', { className: 'dd-k' }, '证据：'), idea.evidence,
+      h('span', { className: 'dd-k' }, '  预估：' + (idea.effort || '未知')),
+    ),
+  )
+}
+
 function ImprovementCard(props) {
   const item = props.item
   return h(Card, { kind: 'dd-improve' },
@@ -131,12 +157,13 @@ function DailyView() {
   const config = (data && data.config) || {}
   const history = (data && data.history) || []
   const improvements = (report && report.improvements) || []
+  const ideas = (report && report.ideas) || []
   // Version skew guard: the host half is loaded once per process (Node caches ES
   // modules by URL, so reinstalling the bundle does not replace it), which means
-  // a refreshed client can outrun the host. Without this the Tab would render an
-  // empty list — indistinguishable from a broken generation.
-  const stale = report !== undefined && report !== null &&
-    report.improvements === undefined && (report.picks !== undefined || report.ideas !== undefined)
+  // a refreshed client can outrun the host. `picks` is the tell — the current
+  // host never emits it. Without this the Tab would render empty lists, which is
+  // indistinguishable from a broken generation.
+  const stale = report !== undefined && report !== null && report.picks !== undefined
 
   function approve(target) {
     const label = target.title || target.basedOn
@@ -203,6 +230,15 @@ function DailyView() {
         })),
     ),
 
+    h('div', { className: 'dd-sec' },
+      h('h4', null, '灵感（生态里还没有的）', h('span', { className: 'dd-count' }, ideas.length + ' 条')),
+      ideas.length === 0
+        ? h('div', { className: 'dd-empty' }, '今天没有够格的灵感。宁缺勿滥——拿不出缺口证据的方向不会被列出来。')
+        : h('div', { className: 'dd-list' }, ideas.map(function (idea, i) {
+          return h(IdeaCard, { key: 'idea-' + i, idea: idea, busy: busy === idea.title, onApprove: approve })
+        })),
+    ),
+
     report && report.dropped ? h('div', { className: 'dd-line dd-k' },
       '生成时丢弃：幻觉来源 ' + (report.dropped.hallucinated || 0) +
       ' · 没写改什么 ' + (report.dropped.noDelta || 0) +
@@ -210,13 +246,14 @@ function DailyView() {
       ' · 空理由 ' + (report.dropped.noWhy || 0) +
       ' · 套话理由 ' + (report.dropped.boilerplateWhy || 0) +
       ' · 改名重发 ' + (report.dropped.sameName || 0) +
-      ' · 残缺 ' + (report.dropped.malformed || 0),
+      ' · 残缺 ' + (report.dropped.malformed || 0) +
+      ' · 残缺灵感 ' + (report.dropped.malformedIdea || 0),
     ) : null,
 
     history.length > 0 ? h('div', { className: 'dd-sec' },
       h('h4', null, '历史'),
       h('div', { className: 'dd-hist' }, history.map(function (item) {
-        return h('span', { key: item.date }, item.date + '（' + item.improvements + ' 项）')
+        return h('span', { key: item.date }, item.date + '（改进 ' + item.improvements + ' / 灵感 ' + item.ideas + '）')
       })),
     ) : null,
   )

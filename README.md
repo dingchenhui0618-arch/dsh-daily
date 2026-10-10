@@ -1,8 +1,8 @@
 # dsh-daily
 
-每天 11:00，把 DSH 插件生态里的**别人已经发布的插件**筛一遍，挑出值得**二次微调或功能优化**的，给出具体改法；你点一下，agent 就独立实现一个更好的版本，发到**你自己的**仓库。
+每天 11:00，把 DSH 插件生态筛一遍，产出两样东西：**在别人已发布的作品上往前走一步**的具体改法，以及**生态里还没有的新方向**；你点一下，agent 就独立实现一个版本，发到**你自己的**仓库。
 
-A daily improvement brief for DeepSeek Harness. It reads the published plugin ecosystem against your own profile, proposes concrete deltas on other people's work with evidence for each gap, and turns one click into an independently implemented repository — never a fork.
+A daily brief for DeepSeek Harness. It reads the published plugin ecosystem against your own profile, proposes concrete deltas on other people's work plus directions nobody has built yet — and turns one click into an independently implemented repository, never a fork.
 
 ## 它解决什么
 
@@ -10,12 +10,18 @@ A daily improvement brief for DeepSeek Harness. It reads the published plugin ec
 
 | | 频率 | 成本 | 谁做 |
 | --- | --- | --- | --- |
-| **日报**：改进项 + 证据 | 每天 11:00 自动 | 一次模型调用 | 插件 |
+| **日报**：改进项 + 灵感 + 证据 | 每天 11:00 自动 | 一次模型调用 | 插件 |
 | **开发 + 发布** | 你点「做这个」才发生 | 一整个开发流程 | agent |
 
 **它不会每天自动造一个仓库。** 那样一个月就是 30 个仓，绝大多数是噪声。批准的权力在你手上，插件只负责把选项摆好、把活递出去。
 
-**它也不是选品清单。** 每一条输出的核心是 `delta`：**原版是 A，我要做成 B**。只写「做得更好」「增强体验」这类空话的会被直接丢弃——因为那种话读起来像答案，实际什么都没说。
+日报产出两栏，来源不同、规矩也不同：
+
+**改进项** —— 拿别人已经发布的插件当靶子。核心字段是 `delta`：**原版是 A，我要做成 B**。只写「做得更好」「增强体验」这类空话的会被直接丢弃——因为那种话读起来像答案，实际什么都没说。
+
+**灵感** —— 生态里还没有、你自己可以立的新方向。没有来源仓库可锚定，所以规矩只有两条：字段不能缺，证据要么引用真实存在的东西、要么老实写「无直接证据」。界面上后者会打「未经证实」的标记——**它就是推测，不该长得像调研结论**。
+
+两栏都会防重复：改进项按**来源仓库**记（同一来源不再出现），灵感按**标题**记并回灌进 prompt（同一方向不再重复提）。
 
 ## 独立实现，不是 fork
 
@@ -34,7 +40,7 @@ A daily improvement brief for DeepSeek Harness. It reads the published plugin ec
 
 1. **不许编造来源。** 每条改进的 `basedOn` 必须**逐字**命中预筛池；不命中就丢弃并计数。链接和分类也取自语料，不采信模型给的 URL。
 2. **不许说空话。** `delta` 为空、或只是「做得更好 / 增强体验 / 优化性能」这类空话，丢弃并计数。`why` 同理（「很强大 / 值得一试」会被丢弃）。
-3. **不许改名重发。** `title` 撞上原仓库的名字就丢弃并计数，见上一节。
+3. **不许改名重发。** `title` 撞上原仓库的名字就丢弃并计数，见上一节。两栏之间也不许重名——名字一样的两条你分不出来，按名字批准也会歧义。
 4. **证据要么可核验，要么标明是猜的。** `evidence` 必须引用池子里的某个 repo 或一个真实链接；拿不出来就只能写 `无直接证据`，界面上会打上「未经证实」的标记，不会冒充调研结论。
 
 界面上会显示每次生成丢弃了多少条、分别因为什么被丢，所以模型糊弄不了你。
@@ -59,7 +65,8 @@ dsh plugin --profile <name> add <插件目录>
 ## 用
 
 - **立即生成** —— 不用等 11:00，随时手动跑一次。
-- **「做这个」** —— 批准一条改进，把它投给当前会话。
+- **改进项的「做这个」** —— 批准一条改进，把它投给当前会话。
+- **灵感的「做这个」** —— 批准一个新方向，投递的是另一套框架（说明这是生态里还没有的东西）。
 - **「不感兴趣」** —— 把这条的来源记进 seen，以后不再出现。
 
 点下去之后，插件**不自己开发**。它把一条消息投递给当前活跃的会话（`ctx.agents.roots()` + `agent.runMaintenance()` + `agent.followup()`，和官方 `dsh-schedule` 投递提醒用的是同一条通路），agent 拿自己的常规工具去干活。
@@ -86,6 +93,7 @@ dsh plugin --profile <name> add <插件目录>
 | `maxCandidates` | `60` | 送进模型的预筛池上限 |
 | `perCategory` | `4` | 每个分类最多进池几个。语料有 23 个分类，所以 4 足够填满 60；设成 2 只能凑到 46 |
 | `maxImprovements` | `10` | 日报最多几条改进项 |
+| `maxIdeas` | `3` | 日报最多几条灵感 |
 | `maxTokens` | `8000` | 单次生成的最大输出 token。要留出推理余量：推理 token 也算在里面 |
 | `historyKeep` | `30` | 保留多少天历史 |
 | `profileName` | `desktop` | 读哪个 profile 的已装插件清单 |
@@ -116,7 +124,7 @@ dsh plugin --profile <name> add <插件目录>
 | --- | --- |
 | `$DSH_HOME/daily/corpus.csv` | 插件语料，插件自己持有一份 |
 | `$DSH_HOME/daily/reports/YYYY-MM-DD.json` | 每天的完整日报（含丢弃统计与原始回复） |
-| `$DSH_HOME/daily/state.json` | seen 列表、历史索引、批准记录 |
+| `$DSH_HOME/daily/state.json` | seen（来源仓库）、提过的灵感标题、历史索引、批准记录 |
 | `$DSH_HOME/daily/approvals.jsonl` | 批准审计流水 |
 
 HTTP 面（挂在 `webServer` 的 `/dsh-daily` 前缀下）：
@@ -124,7 +132,7 @@ HTTP 面（挂在 `webServer` 的 `/dsh-daily` 前缀下）：
 ```
 GET  /dsh-daily/state              配置、状态、当天日报、历史、批准记录
 POST /dsh-daily/run                立即生成（202，异步）
-POST /dsh-daily/approve            { title } 按项目名批准，或 { basedOn } 按来源批准
+POST /dsh-daily/approve            { title } 按项目名批准（改进项或灵感都行），或 { basedOn } 按来源批准
 POST /dsh-daily/skip               { repo } 不再出现
 ```
 
@@ -142,7 +150,7 @@ POST /dsh-daily/skip               { repo } 不再出现
 ## 开发
 
 ```sh
-node --test          # 101 个测试
+node --test          # 114 个测试
 node scripts/build.mjs
 ```
 

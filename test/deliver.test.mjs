@@ -130,8 +130,8 @@ test('the contract forbids forking, cloning and lifting the original code', () =
   const text = buildApprovalMessage(IMPROVEMENT, {})
   assert.ok(text.includes('独立实现，不要 fork'))
   assert.ok(text.includes('禁止 `gh repo fork`'))
-  assert.ok(text.includes('禁止 clone 原仓库'))
-  assert.ok(text.includes('禁止整段搬运原版代码'))
+  assert.ok(text.includes('禁止 clone 别人的仓库'))
+  assert.ok(text.includes('禁止整段搬运别人的代码'))
   assert.ok(text.includes('建**你自己的**仓库'))
   // Borrowing an idea is fine; copying code is not, and the README must say so.
   assert.ok(text.includes('灵感来自哪个原仓库'))
@@ -151,6 +151,39 @@ test('a missing source URL does not leak undefined into the contract', () => {
   const text = buildApprovalMessage(Object.assign({}, IMPROVEMENT, { basedOnUrl: '' }), {})
   assert.ok(text.includes('原版（别人已发布的）：acme/dsh-alpha'))
   assert.ok(!text.includes('undefined'))
+})
+
+// From-scratch ideas are still wanted, and they carry the same hard gates —
+// only the framing differs, because there is no original to differ from.
+const IDEA = {
+  kind: 'idea',
+  title: 'dsh-queue',
+  oneLiner: '把日报变成可执行的开发队列',
+  gap: '生态里没有把选品和开发连起来的插件',
+  evidence: '无直接证据',
+  effort: '1天',
+}
+
+test('an idea approval is framed as a new direction and keeps every hard gate', () => {
+  const text = buildApprovalMessage(IDEA, { projectsRoot: 'D:\\Projects' })
+  assert.ok(text.includes('[DAILY APPROVAL]'))
+  assert.ok(text.includes('## 已批准的方向'))
+  assert.ok(text.includes('dsh-queue'))
+  assert.ok(text.includes('为什么生态里缺：' + IDEA.gap))
+  // Same gates as an improvement: independent repo, tests, three-step check.
+  assert.ok(text.includes('独立实现，不要 fork'))
+  assert.ok(text.includes('gh repo create <你自己的项目名> --public --source . --push'))
+  assert.ok(text.includes('绝对不要推送'))
+  assert.ok(text.includes('node --test'))
+  // No source repo, so no rename rule and no source-crediting rule.
+  assert.ok(!text.includes('原版（别人已发布的）'))
+  assert.ok(!text.includes('改名重发'))
+})
+
+test('an idea with no evidence says so rather than faking a finding', () => {
+  const text = buildApprovalMessage(IDEA, {})
+  assert.ok(text.includes('证据：无直接证据'))
+  assert.ok(text.includes('不许把日报里标为「无直接证据」的推测写成已核实的事实'))
 })
 
 test('buildUserMessage produces the harness message shape', () => {

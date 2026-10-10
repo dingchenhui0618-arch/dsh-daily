@@ -1,13 +1,16 @@
 // Turns a prefiltered candidate pool plus the user brief into a daily report.
 //
 // The product decision this module encodes (user, 2026-10-10): he does not want
-// a reading list, and he does not want ideas invented out of nothing. He wants
-// **improvements on work other people already published** — a concrete delta he
-// can implement himself and ship in his OWN repository, never a fork.
+// a reading list. He wants two things, and both end in his OWN repository.
+//
+//   * `improvements` — push one step past work other people already published:
+//     a concrete delta on a real source repo, never a fork.
+//   * `ideas` — directions the ecosystem does not have yet, which he can start
+//     from nothing.
 //
 // The model does the judgement, because deciding which published plugin is
-// worth pushing one step further is exactly what a scoring function cannot do.
-// Everything this module guarantees is that the model cannot invent or dodge:
+// worth improving is exactly what a scoring function cannot do. Everything this
+// module guarantees is that the model cannot invent or dodge:
 //
 //   * an improvement anchored on a repo that is not in the pool is dropped, so
 //     no hallucinated source can reach the user;
@@ -15,8 +18,8 @@
 //     the delta IS the product, there is nothing to show without it;
 //   * a proposal that merely reuses the source repo's own name is dropped,
 //     because that is a rename-and-republish, not an independent improvement;
-//   * claimed evidence must name something in the pool or link out, otherwise
-//     it is downgraded to an explicit guess instead of shown as a finding.
+//   * an idea must carry a title, one-liner and gap, and its evidence must
+//     either name something real or admit it is a guess.
 //
 // All rules are pure functions over the model's output, so they are unit
 // testable without a model.
@@ -43,6 +46,8 @@ export function buildReportPrompt(input) {
   const brief = input.brief
   const candidates = input.candidates || []
   const maxImprovements = input.maxImprovements || 10
+  const maxIdeas = input.maxIdeas || 3
+  const pastIdeas = Array.isArray(input.pastIdeas) ? input.pastIdeas : []
 
   const rows = candidates.map(function (entry) {
     return '- ' + entry.repo + ' | ' + entry.category + ' | ' + entry.name + ' | ' + oneLine(entry.desc, 220)
@@ -51,16 +56,23 @@ export function buildReportPrompt(input) {
   return [
     '你是 DeepSeek Harness 插件生态的每日改进编辑。今天是 ' + date + '。',
     '',
-    '你的读者是这个生态里的开发者本人。他**不要**「推荐我去装什么」，',
-    '他要的是**在别人已经发布的作品上往前走一步**：从下面这批别人做过的插件里，',
-    '挑出真正值得二次微调、功能优化或能力提升的，给出**具体的改法**。',
-    '他会自己独立实现、发到自己的仓库——不是 fork，不是复刻。',
+    '你的读者是这个生态里的开发者本人。他**不要**「推荐我去装什么」。他要两样东西：',
+    '一是**在别人已经发布的作品上往前走一步**——从下面这批别人做过的插件里挑出值得',
+    '二次微调、功能优化或能力提升的，给出**具体的改法**；',
+    '二是**生态里还没有的新方向**——他自己可以立的需求。',
+    '两样他都会自己独立实现、发到自己的仓库——不是 fork，不是复刻。',
     '',
     brief,
     '',
     '## 今天预筛出的候选（共 ' + candidates.length + ' 个，你只能从这里面挑）',
     '',
     rows.join('\n'),
+    ...(pastIdeas.length > 0 ? [
+      '',
+      '### 这些方向你已经提过了，不要重复',
+      '',
+      pastIdeas.map(function (title) { return '- ' + title }).join('\n'),
+    ] : []),
     '',
     '## 你要输出什么',
     '',
@@ -78,6 +90,15 @@ export function buildReportPrompt(input) {
     '      "effort": "半天|1天|2-3天"',
     '    }',
     '  ],',
+    '  "ideas": [',
+    '    {',
+    '      "title": "<插件名>",',
+    '      "oneLiner": "<一句话它做什么>",',
+    '      "gap": "<为什么生态里缺这个>",',
+    '      "evidence": "<证据>",',
+    '      "effort": "半天|1天|2-3天"',
+    '    }',
+    '  ],',
     '  "notes": "<一句话今日总结>"',
     '}',
     '',
@@ -85,7 +106,7 @@ export function buildReportPrompt(input) {
     '',
     '1. `improvements` 最多 ' + maxImprovements + ' 个。**`basedOn` 只能从上面的候选里挑**，repo 必须逐字复制。',
     '   挑不出够格的就给空数组——**凑数比空手更糟**。',
-    '2. **`delta` 是这份日报的全部价值。** 它必须是能落地的具体改动，说清改哪个点、改成什么样。',
+    '2. **`delta` 是改进项的全部价值。** 它必须是能落地的具体改动，说清改哪个点、改成什么样。',
     '   写「做得更好」「增强体验」「优化性能」「更加完善」这类空话等于没写，会被丢弃。',
     '3. **`title` 不能就是原仓库的名字或它的原名。** 这是独立实现，不是改名重发，会被丢弃。',
     '4. 每个 `why` 必须落到这位用户的具体工作或约束上，不要泛泛而谈。',
@@ -93,8 +114,11 @@ export function buildReportPrompt(input) {
     '   - 上面候选里的某个 repo 名，或一个 GitHub 链接，说明这个缺口真实存在；',
     '   - 或者字面量「' + EVIDENCE_UNVERIFIED + '」，表示你只是在推测。',
     '   **绝不许编造证据。** 拿不出证据又想提，就老实写「' + EVIDENCE_UNVERIFIED + '」。',
-    '6. 不是让你复刻原版，是让你在它的**思路上往前走一步**：原版没解决的那部分由你来解决。',
-    '7. 全部用中文。不许编造候选里没有的插件名、star 数、作者名或下载量。',
+    '6. `ideas` 最多 ' + maxIdeas + ' 个，是**生态里还没有、他自己可以立的新方向**——不是候选里已有的东西。',
+    '   `title`、`oneLiner`、`gap`、`evidence` 一个都不能空，`evidence` 规则同第 5 条。',
+    '   想到什么写什么，不必凑数；但「给某个现有插件加个功能」属于 `improvements`，不要塞进 `ideas`。',
+    '7. 两条产出的共同点：不是复刻别人的东西，是把想法落到**他能验收的**实现上。',
+    '8. 全部用中文。不许编造候选里没有的插件名、star 数、作者名或下载量。',
   ].join('\n')
 }
 
@@ -170,13 +194,14 @@ export function sameName(title, entry) {
 export function validateReport(parsed, pool, options) {
   const settings = options || {}
   const maxImprovements = settings.maxImprovements || 10
+  const maxIdeas = settings.maxIdeas || 3
   const dropped = {
     hallucinated: 0, noDelta: 0, hollowDelta: 0, noWhy: 0, boilerplateWhy: 0,
-    malformed: 0, sameName: 0, duplicate: 0,
+    malformed: 0, malformedIdea: 0, sameName: 0, duplicate: 0,
   }
 
   if (parsed === undefined || parsed === null || typeof parsed !== 'object') {
-    return { report: { improvements: [], notes: '' }, dropped: dropped, ok: false }
+    return { report: { improvements: [], ideas: [], notes: '' }, dropped: dropped, ok: false }
   }
 
   const byRepo = new Map()
@@ -190,6 +215,10 @@ export function validateReport(parsed, pool, options) {
 
   const improvements = []
   const used = new Set()
+  // A separate namespace for titles: improvements dedupe on their source repo,
+  // but two items the user cannot tell apart by name are a defect regardless of
+  // which list they came from (and `approve` addresses an item by title).
+  const usedTitles = new Set()
   for (const raw of Array.isArray(parsed.improvements) ? parsed.improvements : []) {
     if (!raw || typeof raw !== 'object') {
       dropped.malformed = dropped.malformed + 1
@@ -236,6 +265,10 @@ export function validateReport(parsed, pool, options) {
       dropped.sameName = dropped.sameName + 1
       continue
     }
+    if (usedTitles.has(nameKey(title))) {
+      dropped.duplicate = dropped.duplicate + 1
+      continue
+    }
 
     // Claimed evidence must actually name something in the pool or link out.
     // Anything else is downgraded to an explicit guess rather than shown as a
@@ -246,6 +279,7 @@ export function validateReport(parsed, pool, options) {
       poolNames.some(function (name) { return name.length > 3 && evidence.toLowerCase().indexOf(name) >= 0 })
 
     used.add(key)
+    usedTitles.add(nameKey(title))
     improvements.push({
       basedOn: entry.repo,
       basedOnName: entry.name,
@@ -263,8 +297,49 @@ export function validateReport(parsed, pool, options) {
     if (improvements.length >= maxImprovements) break
   }
 
+  // From-scratch directions. There is no source repo to check these against, so
+  // the only guarantees available are that the fields are present and that the
+  // evidence either names something real or admits it is a guess.
+  const ideas = []
+  for (const raw of Array.isArray(parsed.ideas) ? parsed.ideas : []) {
+    if (!raw || typeof raw !== 'object') {
+      dropped.malformedIdea = dropped.malformedIdea + 1
+      continue
+    }
+    const title = String(raw.title || '').trim()
+    const oneLiner = String(raw.oneLiner || '').trim()
+    const gap = String(raw.gap || '').trim()
+    const evidence = String(raw.evidence || '').trim()
+    if (title.length === 0 || oneLiner.length === 0 || gap.length === 0 || evidence.length === 0) {
+      dropped.malformedIdea = dropped.malformedIdea + 1
+      continue
+    }
+    const key = nameKey(title)
+    if (usedTitles.has(key)) {
+      dropped.duplicate = dropped.duplicate + 1
+      continue
+    }
+    usedTitles.add(key)
+    const claimsVerified = evidence !== EVIDENCE_UNVERIFIED
+    const grounded = /https?:\/\//i.test(evidence) ||
+      poolNames.some(function (name) { return name.length > 3 && evidence.toLowerCase().indexOf(name) >= 0 })
+    ideas.push({
+      title: title,
+      oneLiner: oneLiner,
+      gap: gap,
+      evidence: evidence,
+      effort: String(raw.effort || '').trim() || '未知',
+      verified: claimsVerified && grounded,
+    })
+    if (ideas.length >= maxIdeas) break
+  }
+
   return {
-    report: { improvements: improvements, notes: String(parsed.notes || '').trim() },
+    report: {
+      improvements: improvements,
+      ideas: ideas,
+      notes: String(parsed.notes || '').trim(),
+    },
     dropped: dropped,
     ok: true,
   }

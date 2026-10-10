@@ -130,9 +130,12 @@ test('improvements are capped at maxImprovements', () => {
   for (let i = 0; i < 20; i++) {
     many.push({ category: 'c', name: 'p' + i, repo: 'acme/p' + i, url: 'u', desc: 'd' })
   }
-  const list = many.map(function (entry) { return imp(entry.repo) })
+  // Distinct titles: two items the user cannot tell apart by name are dropped as
+  // duplicates before the cap is ever reached.
+  const list = many.map(function (entry, i) { return imp(entry.repo, { title: 'dsh-cap-' + i }) })
   const out = validateReport({ improvements: list }, many, { maxImprovements: 3 })
   assert.equal(out.report.improvements.length, 3)
+  assert.equal(out.dropped.duplicate, 0)
 })
 
 test('an improvement missing a required field is dropped as malformed', () => {
@@ -176,8 +179,77 @@ test('unusable input yields an empty report instead of throwing', () => {
     const out = validateReport(value, pool)
     assert.equal(out.ok, false)
     assert.deepEqual(out.report.improvements, [])
+    assert.deepEqual(out.report.ideas, [])
   }
   assert.equal(validateReport({}, undefined).report.improvements.length, 0)
+})
+
+test('an idea needs a title, one-liner, gap and evidence', () => {
+  const out = validateReport({
+    ideas: [
+      { title: 'T', oneLiner: 'O', gap: 'G', evidence: EVIDENCE_UNVERIFIED },
+      { title: '', oneLiner: 'O', gap: 'G', evidence: EVIDENCE_UNVERIFIED },
+      { title: 'T', oneLiner: '', gap: 'G', evidence: EVIDENCE_UNVERIFIED },
+      { title: 'T', oneLiner: 'O', gap: '', evidence: EVIDENCE_UNVERIFIED },
+      { title: 'T', oneLiner: 'O', gap: 'G', evidence: '' },
+    ],
+  }, pool)
+  assert.equal(out.report.ideas.length, 1)
+  assert.equal(out.dropped.malformedIdea, 4)
+})
+
+test('an idea citing a pool repo is marked verified', () => {
+  const out = validateReport({
+    ideas: [{ title: 'dsh-new', oneLiner: 'O', gap: 'G', evidence: 'acme/dsh-alpha 只做了一半' }],
+  }, pool)
+  assert.equal(out.report.ideas[0].verified, true)
+})
+
+test('an idea admitting it has no evidence is kept but marked unverified', () => {
+  const out = validateReport({
+    ideas: [{ title: 'dsh-new', oneLiner: 'O', gap: 'G', evidence: EVIDENCE_UNVERIFIED }],
+  }, pool)
+  assert.equal(out.report.ideas.length, 1)
+  assert.equal(out.report.ideas[0].verified, false)
+})
+
+test('the same idea title twice is counted once', () => {
+  const idea = { title: 'dsh-new', oneLiner: 'O', gap: 'G', evidence: EVIDENCE_UNVERIFIED }
+  const out = validateReport({ ideas: [idea, idea] }, pool)
+  assert.equal(out.report.ideas.length, 1)
+  assert.equal(out.dropped.duplicate, 1)
+})
+
+test('ideas are capped at maxIdeas', () => {
+  const list = []
+  for (let i = 0; i < 8; i++) {
+    list.push({ title: 'dsh-new-' + i, oneLiner: 'O', gap: 'G', evidence: EVIDENCE_UNVERIFIED })
+  }
+  const out = validateReport({ ideas: list }, pool, { maxIdeas: 2 })
+  assert.equal(out.report.ideas.length, 2)
+})
+
+test('improvements and ideas coexist in one reply', () => {
+  const out = validateReport({
+    improvements: [imp('acme/dsh-alpha')],
+    ideas: [{ title: 'dsh-new', oneLiner: 'O', gap: 'G', evidence: EVIDENCE_UNVERIFIED }],
+    notes: '两样都有',
+  }, pool, { maxImprovements: 5, maxIdeas: 3 })
+  assert.equal(out.report.improvements.length, 1)
+  assert.equal(out.report.ideas.length, 1)
+  assert.equal(out.report.notes, '两样都有')
+})
+
+test('a title reused across both lists is counted once', () => {
+  // Improvements and ideas share one title namespace, so the second use of a
+  // name is a duplicate rather than two items the user cannot tell apart.
+  const out = validateReport({
+    improvements: [imp('acme/dsh-alpha', { title: 'dsh-shared' })],
+    ideas: [{ title: 'dsh-shared', oneLiner: 'O', gap: 'G', evidence: EVIDENCE_UNVERIFIED }],
+  }, pool)
+  assert.equal(out.report.improvements.length, 1)
+  assert.equal(out.report.ideas.length, 0)
+  assert.equal(out.dropped.duplicate, 1)
 })
 
 test('parseReportJson tolerates code fences and surrounding prose', () => {
@@ -192,20 +264,40 @@ test('parseReportJson returns undefined on unusable replies', () => {
   }
 })
 
-test('the prompt asks for improvements on others work, not for a reading list', () => {
+test('the prompt asks for both improvements and ideas, not for a reading list', () => {
   const prompt = buildReportPrompt({
     date: '2026-10-08',
     brief: '## 这位用户是谁\n喜欢自动化',
     candidates: pool,
     maxImprovements: 7,
+    maxIdeas: 2,
   })
   assert.ok(prompt.includes('最多 7 个'))
+  assert.ok(prompt.includes('最多 2 个'))
   assert.ok(prompt.includes(EVIDENCE_UNVERIFIED))
   assert.ok(prompt.includes('acme/dsh-alpha'))
   assert.ok(prompt.includes('acme/dsh-beta'))
   assert.ok(prompt.includes('不许编造'))
-  // The three rules that define the new product direction.
+  // The rules that define the product direction.
   assert.ok(prompt.includes('不是 fork'), 'the prompt must rule out forking')
   assert.ok(prompt.includes('不是改名重发'), 'the prompt must rule out renaming the source')
   assert.ok(prompt.includes('delta'), 'the prompt must demand a concrete delta')
+  assert.ok(prompt.includes('"ideas"'), 'the prompt must still ask for from-scratch directions')
+})
+
+test('past idea titles are fed back so the same direction is not proposed twice', () => {
+  const prompt = buildReportPrompt({
+    date: '2026-10-09',
+    brief: 'b',
+    candidates: pool,
+    pastIdeas: ['dsh-already-suggested', 'dsh-also-suggested'],
+  })
+  assert.ok(prompt.includes('这些方向你已经提过了，不要重复'))
+  assert.ok(prompt.includes('- dsh-already-suggested'))
+  assert.ok(prompt.includes('- dsh-also-suggested'))
+})
+
+test('no past-idea block appears when nothing has been proposed yet', () => {
+  const prompt = buildReportPrompt({ date: '2026-10-09', brief: 'b', candidates: pool })
+  assert.ok(!prompt.includes('这些方向你已经提过了'))
 })
