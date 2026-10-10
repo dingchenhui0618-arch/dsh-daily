@@ -70,6 +70,7 @@ dsh plugin --profile <name> add <插件目录>
 | `perCategory` | `4` | 每个分类最多进池几个。语料有 23 个分类，所以 4 足够填满 60；设成 2 只能凑到 46 |
 | `maxRecommend` | `10` | 日报最多几条推荐 |
 | `maxIdeas` | `3` | 最多几条灵感 |
+| `maxTokens` | `8000` | 单次生成的最大输出 token。要留出推理余量：推理 token 也算在里面 |
 | `historyKeep` | `30` | 保留多少天历史 |
 | `profileName` | `desktop` | 读哪个 profile 的已装插件清单 |
 | `corpusPath` | `$DSH_HOME/daily/corpus.csv` | 语料。不存在时从 `seedCorpus` 复制一份 |
@@ -114,6 +115,13 @@ POST /dsh-daily/skip               { repo } 不再出现
 ## 容错姿态
 
 这个插件任何一处坏掉都不该拖垮 harness，所以：读不到语料、模型路由不可用、模型返回的不是 JSON、stream 以 `finish{kind:'error'}` 结束、agent 正忙——全部降级成界面上的一行状态，不抛异常。`webServer.register` 失败也只是没有 HTTP 面，host 半区和定时器照常工作。缺的画像来源会显式列在 `status`/报告里，而不是悄悄生成一份泛泛的日报。
+
+**模型偶尔吐不出 JSON 是常态，不是异常。** 本机实测 `deepseek-flash` 在这条链路上会返回无法解析的回复（同一个模型给另一个插件做审查时 13 次里有 2 次失败）。所以生成不是一锤子买卖：
+
+1. 第一次不解析 → 追加「只输出 JSON 本身」的更强约束**重试一次**；
+2. 重试仍不解析 → 把 `finish` 原因、收到的字符数和**原始回复前 2000 字**写进报告，同时在界面上报错。
+
+这一条是刻意的：**空报告绝不能被伪装成「今天没有好东西」。** 没有这段，模型失败和风平浪静在界面上长得一模一样。
 
 ## 开发
 

@@ -109,10 +109,17 @@ function setup(options) {
   const llm = {
     stream: function (options) {
       prompts.push(options)
-      const reply = opts.reply === undefined ? goodReply() : opts.reply
+      // `replies` scripts one reply per call, which is what the retry path needs.
+      const queued = Array.isArray(opts.replies) ? opts.replies[prompts.length - 1] : undefined
+      const reply = queued === undefined ? (opts.reply === undefined ? goodReply() : opts.reply) : queued
       return (async function* () {
         if (opts.finishError) {
           yield { type: 'finish', reason: { kind: 'error', failure: { message: 'model exploded' } } }
+          return
+        }
+        if (opts.finishLength) {
+          yield { type: 'text-delta', text: '{"picks":[' }
+          yield { type: 'finish', reason: { kind: 'length' } }
           return
         }
         yield { type: 'text-delta', text: reply }
@@ -315,6 +322,43 @@ test('a reply that is not JSON yields an empty report rather than inventing one'
   assert.deepEqual(report.picks, [])
   assert.deepEqual(report.ideas, [])
   assert.equal(report.parsed, false)
+  // The reply must be kept and the failure surfaced: an empty report that reads
+  // as "nothing good today" would hide a broken generation.
+  assert.equal(report.reply.head, '抱歉，我今天不想工作。')
+  assert.equal(report.reply.finish, 'stop')
+  assert.equal(report.reply.attempts.length, 2, 'it must retry before giving up')
+  const state = await call(built, 'GET', '/dsh-daily/state')
+  assert.ok(state.body.status.lastError.includes('可解析的 JSON'))
+})
+
+test('a first reply that is not JSON is retried, and the retry is the one used', async () => {
+  const built = setup({ replies: ['抱歉，我今天不想工作。', goodReply()] })
+  await runAndWait(built)
+  assert.equal(built.prompts.length, 2, 'the model must be asked a second time')
+  assert.ok(built.prompts[1].messages[0].content[0].text.includes('再试一次'))
+  const report = readReport(built)
+  assert.equal(report.parsed, true)
+  assert.equal(report.picks.length, 1)
+  assert.equal(report.picks[0].repo, 'acme/dsh-alpha')
+  assert.equal(report.reply.attempts.length, 2)
+  const state = await call(built, 'GET', '/dsh-daily/state')
+  assert.equal(state.body.status.lastError, undefined, 'a recovered run must not report a failure')
+})
+
+test('a good first reply is not retried', async () => {
+  const built = setup()
+  await runAndWait(built)
+  assert.equal(built.prompts.length, 1)
+})
+
+test('a reply truncated by the token budget is a failure, not a quiet day', async () => {
+  const built = setup({ finishLength: true })
+  await runAndWait(built)
+  const state = await call(built, 'GET', '/dsh-daily/state')
+  assert.ok(state.body.status.lastError.includes('length'), 'got: ' + state.body.status.lastError)
+  assert.equal(state.body.today.parsed, false)
+  assert.equal(state.body.today.reply.finish, 'length')
+  assert.equal(state.body.today.reply.chars, 10)
 })
 
 test('approving an unknown target is refused', async () => {
