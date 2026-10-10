@@ -150,13 +150,13 @@ POST /dsh-daily/skip               { repo } 不再出现
 ## 开发
 
 ```sh
-node --test          # 114 个测试
+node --test          # 118 个测试
 node scripts/build.mjs
 ```
 
 零依赖构建：host 半区只 import `node:` 内置模块和同目录兄弟模块，所以复制 `src/*.js` 到 `lib/` 就是完整构建——没有会在安装时挂掉的 devDependency。client 半区是 CJS，构建时把唯一的相对 require（样式表）内联进去，然后用 `new Function()` 编译一次，并在浏览器之外直接 import `lib/index.js` 校验导出，坏构建在构建期就炸。
 
-测试用桩 Context 驱动真实的 `apply()`（`test/host.test.mjs`），跑的是真的排期、真的池子过滤、真的输出校验、真的持久化和真的投递，不是这些逻辑的复刻。`test/corpus.test.mjs` 里有一条直接跑真实 3727 条语料的用例。
+测试用桩 Context 驱动真实的 `apply()`（`test/host.test.mjs`），跑的是真的排期、真的池子过滤、真的输出校验、真的持久化和真的投递，不是这些逻辑的复刻。`test/corpus.test.mjs` 里有一条直接跑真实 3727 条语料的用例。`test/client.test.mjs` 把客户端半区也拉进测试（只桩掉 React），管住 Tab 的注册契约和版本错配的判断方向。
 
 ## License
 
