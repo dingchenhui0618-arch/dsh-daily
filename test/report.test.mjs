@@ -2,7 +2,9 @@ import test from 'node:test'
 import { strict as assert } from 'node:assert'
 import {
   EVIDENCE_UNVERIFIED,
+  TYPES,
   buildReportPrompt,
+  normaliseType,
   parseReportJson,
   sameName,
   validateReport,
@@ -264,6 +266,94 @@ test('parseReportJson returns undefined on unusable replies', () => {
   }
 })
 
+test('normaliseType folds aliases, qualifiers and blanks onto the six types', () => {
+  assert.deepEqual(TYPES, ['工具', '游戏', '趣味', '外观', '多媒体', '传播'])
+  assert.equal(normaliseType('工具'), '工具')
+  assert.equal(normaliseType('game'), '游戏')
+  assert.equal(normaliseType('Themes'), '外观')
+  assert.equal(normaliseType('语音'), '多媒体')
+  assert.equal(normaliseType('工具类插件'), '工具')
+  assert.equal(normaliseType('游戏/game'), '游戏')
+  assert.equal(normaliseType(''), '未标注')
+  assert.equal(normaliseType(undefined), '未标注')
+  assert.equal(normaliseType(null), '未标注')
+  assert.equal(normaliseType('随便什么'), '其他')
+})
+
+test('a Chinese title survives, and is not mistaken for a rename', () => {
+  // Regression. nameKey used to strip everything outside [a-z0-9], so every
+  // Chinese title collapsed to the empty string; sameName then called an empty
+  // key a rename, and discarded the lot — while the prompt was asking the model
+  // to write in Chinese. Eight of ten good improvements died this way.
+  assert.equal(sameName('证据闭环审稿器', pool[0]), false)
+  const out = validateReport({ improvements: [imp('acme/dsh-alpha', { title: '证据闭环审稿器' })] }, pool)
+  assert.equal(out.report.improvements.length, 1)
+  assert.equal(out.report.improvements[0].title, '证据闭环审稿器')
+  assert.equal(out.dropped.sameName, 0)
+})
+
+test('a Chinese title still matches a Chinese source name', () => {
+  const entry = { name: '证据闭环审稿器', repo: 'acme/证据闭环审稿器', url: 'u', category: 'c', desc: 'd' }
+  assert.equal(sameName('证据闭环审稿器', entry), true)
+  assert.equal(sameName('证据-闭环-审稿器', entry), true)
+})
+
+test('a title with no letters or digits is counted apart from a rename', () => {
+  const out = validateReport({ improvements: [imp('acme/dsh-alpha', { title: '!!!' })] }, pool)
+  assert.equal(out.report.improvements.length, 0)
+  assert.equal(out.dropped.noTitle, 1)
+  assert.equal(out.dropped.sameName, 0, 'an unusable title is not a rename')
+})
+
+test('every item carries a type and the report counts them', () => {
+  const out = validateReport({
+    improvements: [
+      imp('acme/dsh-alpha', { type: '游戏' }),
+      imp('acme/dsh-beta', { title: 'dsh-other', type: '外观' }),
+    ],
+  }, pool)
+  assert.equal(out.report.improvements[0].type, '游戏')
+  assert.equal(out.report.improvements[1].type, '外观')
+  assert.deepEqual(out.report.typeCounts, { 游戏: 1, 外观: 1 })
+  assert.equal(out.report.monotone, false)
+})
+
+test('an all-one-type report is flagged monotone but its content is kept', () => {
+  // The host retries once on this; discarding here would throw away good work.
+  const out = validateReport({
+    improvements: [imp('acme/dsh-alpha', { type: '工具' })],
+    ideas: [{ title: 'dsh-x', type: '工具', oneLiner: 'O', gap: 'G', evidence: EVIDENCE_UNVERIFIED }],
+  }, pool)
+  assert.equal(out.report.monotone, true)
+  assert.equal(out.report.improvements.length, 1)
+  assert.equal(out.report.ideas.length, 1)
+})
+
+test('a report that omits type entirely is not monotone', () => {
+  // Retrying on a missing field would burn a second model call for no gain; the
+  // Tab shows 未标注 instead.
+  const out = validateReport({
+    improvements: [
+      imp('acme/dsh-alpha'),
+      imp('acme/dsh-beta', { title: 'dsh-other' }),
+    ],
+  }, pool)
+  assert.deepEqual(out.report.typeCounts, { 未标注: 2 })
+  assert.equal(out.report.monotone, false)
+})
+
+test('a single item is never monotone', () => {
+  const out = validateReport({ improvements: [imp('acme/dsh-alpha', { type: '工具' })] }, pool)
+  assert.equal(out.report.monotone, false)
+})
+
+test('an idea type is normalised too', () => {
+  const out = validateReport({
+    ideas: [{ title: 'dsh-x', type: 'share', oneLiner: 'O', gap: 'G', evidence: EVIDENCE_UNVERIFIED }],
+  }, pool)
+  assert.equal(out.report.ideas[0].type, '传播')
+})
+
 test('the prompt asks for both improvements and ideas, not for a reading list', () => {
   const prompt = buildReportPrompt({
     date: '2026-10-08',
@@ -283,10 +373,15 @@ test('the prompt asks for both improvements and ideas, not for a reading list', 
   assert.ok(prompt.includes('不是改名重发'), 'the prompt must rule out renaming the source')
   assert.ok(prompt.includes('delta'), 'the prompt must demand a concrete delta')
   assert.ok(prompt.includes('"ideas"'), 'the prompt must still ask for from-scratch directions')
+  // The report must not collapse into an all-tooling list just because the
+  // profile brief it reads is drawn from engineering memory.
+  assert.ok(prompt.includes('至少覆盖 3 种'), 'the prompt must require type diversity')
+  assert.ok(prompt.includes('工具|游戏|趣味|外观|多媒体|传播'), 'the schema must enumerate the types')
+  assert.ok(prompt.includes('德州扑克'), 'the prompt must name the evidence that his range is wider')
+  assert.ok(prompt.includes('不要只盯着工程效率'))
 })
 
-test('past idea titles are fed back so the same direction is not proposed twice', () => {
-  const prompt = buildReportPrompt({
+test('past idea titles are fed back so the same direction is not proposed twice', () => {  const prompt = buildReportPrompt({
     date: '2026-10-09',
     brief: 'b',
     candidates: pool,

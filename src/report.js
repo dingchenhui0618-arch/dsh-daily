@@ -26,6 +26,48 @@
 
 export const EVIDENCE_UNVERIFIED = '无直接证据'
 
+/**
+ * The report must spread across these kinds of work, not only the first one.
+ *
+ * Why this exists: the profile brief is drawn from the user's agent memory and
+ * conventions, which are entirely about engineering discipline, so a model
+ * reading it produced a report of nothing but developer tooling — eight items,
+ * all gateways and ledgers. The candidate pool was never the problem: it is
+ * already balanced across 23 ecosystem categories, and "Just for Fun",
+ * "Themes & Appearance" and "Voice & Audio" were all in it. The bias was in the
+ * instruction. The user builds games as well as tools (he wrote a Texas Hold'em
+ * plugin), so the report has to be told to look wider.
+ */
+export const TYPES = ['工具', '游戏', '趣味', '外观', '多媒体', '传播']
+
+// The model answers in either language and sometimes qualifies the label
+// ("工具类插件"), so both are folded onto the six canonical types.
+const TYPE_ALIASES = {
+  tool: '工具', tools: '工具', utility: '工具', dev: '工具', developer: '工具', 功能: '工具', 开发: '工具',
+  game: '游戏', games: '游戏', gaming: '游戏', 游戏类: '游戏',
+  fun: '趣味', novelty: '趣味', toy: '趣味', 娱乐: '趣味', 玩具: '趣味',
+  theme: '外观', themes: '外观', appearance: '外观', visual: '外观', ui: '外观', 视觉: '外观', 主题: '外观', 外观类: '外观',
+  media: '多媒体', audio: '多媒体', voice: '多媒体', image: '多媒体', video: '多媒体', 音频: '多媒体', 图像: '多媒体', 语音: '多媒体',
+  share: '传播', sharing: '传播', social: '传播', viral: '传播', 分享: '传播', 展示: '传播', 传播性: '传播',
+}
+
+/** Fold whatever the model wrote onto one of TYPES, or a visible fallback. */
+export function normaliseType(value) {
+  const raw = String(value === undefined || value === null ? '' : value).trim()
+  if (raw === '') return '未标注'
+  if (TYPES.indexOf(raw) >= 0) return raw
+  const lower = raw.toLowerCase()
+  if (TYPE_ALIASES[lower] !== undefined) return TYPE_ALIASES[lower]
+  // Tolerate qualifiers such as "工具类插件" or "游戏/game".
+  for (const type of TYPES) {
+    if (raw.indexOf(type) >= 0) return type
+  }
+  for (const alias of Object.keys(TYPE_ALIASES)) {
+    if (lower.indexOf(alias) >= 0) return TYPE_ALIASES[alias]
+  }
+  return '其他'
+}
+
 // Words that mean nothing in a `why`. If one of these is all there is, the
 // model dodged the question and the item is not worth the user's attention.
 const BOILERPLATE_WHY = [
@@ -61,6 +103,8 @@ export function buildReportPrompt(input) {
     '二次微调、功能优化或能力提升的，给出**具体的改法**；',
     '二是**生态里还没有的新方向**——他自己可以立的需求。',
     '两样他都会自己独立实现、发到自己的仓库——不是 fork，不是复刻。',
+    '他也不是只要开发工具：他是工程师，但同样做游戏、做视觉、做好玩和能拿出去给人看的东西。',
+    '候选清单覆盖整个生态（含游戏、外观、语音、趣味等分类），**不要只盯着工程效率**。',
     '',
     brief,
     '',
@@ -82,7 +126,8 @@ export function buildReportPrompt(input) {
     '  "improvements": [',
     '    {',
     '      "basedOn": "<必须与候选里的 repo 逐字一致>",',
-    '      "title": "<你自己那个独立项目的名字，不能就是原仓库的名字>",',
+    '      "type": "<' + TYPES.join('|') + '>",',
+    '      "title": "<小写 ASCII 的插件名，形如 dsh-xxx。它会直接变成仓库名和目录名>",',
     '      "delta": "<具体改什么：一句话说清「原版是 A，我要做成 B」>",',
     '      "why": "<一句话：为什么这个改动对这位用户有价值>",',
     '      "gap": "<原版做到哪一步、差在哪>",',
@@ -92,7 +137,8 @@ export function buildReportPrompt(input) {
     '  ],',
     '  "ideas": [',
     '    {',
-    '      "title": "<插件名>",',
+    '      "title": "<小写 ASCII 的插件名，形如 dsh-xxx。它会直接变成仓库名和目录名>",',
+    '      "type": "<' + TYPES.join('|') + '>",',
     '      "oneLiner": "<一句话它做什么>",',
     '      "gap": "<为什么生态里缺这个>",',
     '      "evidence": "<证据>",',
@@ -109,7 +155,9 @@ export function buildReportPrompt(input) {
     '2. **`delta` 是改进项的全部价值。** 它必须是能落地的具体改动，说清改哪个点、改成什么样。',
     '   写「做得更好」「增强体验」「优化性能」「更加完善」这类空话等于没写，会被丢弃。',
     '3. **`title` 不能就是原仓库的名字或它的原名。** 这是独立实现，不是改名重发，会被丢弃。',
-    '4. 每个 `why` 必须落到这位用户的具体工作或约束上，不要泛泛而谈。',
+    '   两个 `title` 都必须是**小写 ASCII、用连字符连接的插件名（形如 `dsh-xxx`）**——',
+    '   它会被直接当作 GitHub 仓库名和本地目录名，中文或空格都不行。其余字段用中文。',
+    '4. 每个 `why` 必须落到这位用户身上：他的工作、他的项目，或者他真正会去玩、会去用的东西。不要泛泛而谈。',
     '5. `gap` 要说清原版覆盖到哪、缺口在哪。`evidence` 必须是二者之一：',
     '   - 上面候选里的某个 repo 名，或一个 GitHub 链接，说明这个缺口真实存在；',
     '   - 或者字面量「' + EVIDENCE_UNVERIFIED + '」，表示你只是在推测。',
@@ -119,6 +167,11 @@ export function buildReportPrompt(input) {
     '   想到什么写什么，不必凑数；但「给某个现有插件加个功能」属于 `improvements`，不要塞进 `ideas`。',
     '7. 两条产出的共同点：不是复刻别人的东西，是把想法落到**他能验收的**实现上。',
     '8. 全部用中文。不许编造候选里没有的插件名、star 数、作者名或下载量。',
+    '9. **`type` 必须分散。** 每条的 `type` 只能取：' + TYPES.join(' / ') + '。',
+    '   这位用户的兴趣**不限于开发工具**——他自己写过一个德州扑克插件，候选里也有游戏、外观、',
+    '   语音、趣味这些分类。**一份日报里至少覆盖 3 种 `type`，并且要主动去找游戏、趣味、外观、',
+    '   多媒体、传播方向**，不要把全部名额用在「提升工作效率」上。全是「工具」的日报算不合格。',
+    '   判断标准不是「这个好玩」，而是「他会不会真的想去装/去做」——趣味插件同样要有具体价值。',
   ].join('\n')
 }
 
@@ -146,9 +199,19 @@ function normaliseRepo(repo) {
   return String(repo || '').trim().toLowerCase()
 }
 
-/** Collapse a plugin name to comparable letters and digits. */
+/**
+ * Collapse a plugin name to comparable letters and digits.
+ *
+ * Unicode-aware on purpose. An earlier version stripped everything outside
+ * [a-z0-9], which turned every Chinese title into the empty string — and since
+ * the prompt asks for Chinese, every title a compliant model wrote compared
+ * equal to every other one. With `sameName` treating an empty key as a rename,
+ * eight of ten good improvements were being discarded as "rename-and-republish".
+ * Names in this ecosystem are ASCII, but the model is not obliged to write one,
+ * so the comparison must not destroy non-ASCII input.
+ */
 function nameKey(text) {
-  return String(text || '').toLowerCase().replace(/[^a-z0-9]/g, '')
+  return String(text || '').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '')
 }
 
 function lastSegment(repo) {
@@ -175,7 +238,9 @@ function isHollow(text, words) {
  */
 export function sameName(title, entry) {
   const key = nameKey(title)
-  if (key.length === 0) return true
+  // Nothing comparable in the title means it cannot be a rename of anything.
+  // An unusable title is a different defect, counted separately as `noTitle`.
+  if (key.length === 0) return false
   const taken = [
     nameKey(entry.name),
     nameKey(lastSegment(entry.repo)),
@@ -197,11 +262,15 @@ export function validateReport(parsed, pool, options) {
   const maxIdeas = settings.maxIdeas || 3
   const dropped = {
     hallucinated: 0, noDelta: 0, hollowDelta: 0, noWhy: 0, boilerplateWhy: 0,
-    malformed: 0, malformedIdea: 0, sameName: 0, duplicate: 0,
+    malformed: 0, malformedIdea: 0, noTitle: 0, sameName: 0, duplicate: 0,
   }
 
   if (parsed === undefined || parsed === null || typeof parsed !== 'object') {
-    return { report: { improvements: [], ideas: [], notes: '' }, dropped: dropped, ok: false }
+    return {
+      report: { improvements: [], ideas: [], notes: '', typeCounts: {}, monotone: false },
+      dropped: dropped,
+      ok: false,
+    }
   }
 
   const byRepo = new Map()
@@ -243,6 +312,12 @@ export function validateReport(parsed, pool, options) {
 
     if (title.length === 0 || gap.length === 0 || evidence.length === 0) {
       dropped.malformed = dropped.malformed + 1
+      continue
+    }
+    // The title becomes the repository name and the project directory, so a
+    // title with no letters or digits in it cannot be used for either.
+    if (nameKey(title).length === 0) {
+      dropped.noTitle = dropped.noTitle + 1
       continue
     }
     if (delta.length === 0) {
@@ -287,6 +362,7 @@ export function validateReport(parsed, pool, options) {
       category: entry.category,
       desc: entry.desc,
       title: title,
+      type: normaliseType(raw.type),
       delta: delta,
       why: why,
       gap: gap,
@@ -315,6 +391,10 @@ export function validateReport(parsed, pool, options) {
       continue
     }
     const key = nameKey(title)
+    if (key.length === 0) {
+      dropped.noTitle = dropped.noTitle + 1
+      continue
+    }
     if (usedTitles.has(key)) {
       dropped.duplicate = dropped.duplicate + 1
       continue
@@ -325,6 +405,7 @@ export function validateReport(parsed, pool, options) {
       poolNames.some(function (name) { return name.length > 3 && evidence.toLowerCase().indexOf(name) >= 0 })
     ideas.push({
       title: title,
+      type: normaliseType(raw.type),
       oneLiner: oneLiner,
       gap: gap,
       evidence: evidence,
@@ -334,11 +415,26 @@ export function validateReport(parsed, pool, options) {
     if (ideas.length >= maxIdeas) break
   }
 
+  const all = improvements.concat(ideas)
+  const typeCounts = {}
+  for (const item of all) {
+    typeCounts[item.type] = (typeCounts[item.type] || 0) + 1
+  }
+  const distinct = Object.keys(typeCounts)
+  // One type across the whole report means the model ignored rule 9. That is not
+  // a reason to throw away otherwise good content, so it is reported rather than
+  // enforced here: the host retries once on it and the Tab says so. A model that
+  // omitted `type` entirely is NOT monotone — that is a different failure, and
+  // retrying on it would only burn a second call.
+  const monotone = all.length >= 2 && distinct.length === 1 && distinct[0] !== '未标注'
+
   return {
     report: {
       improvements: improvements,
       ideas: ideas,
       notes: String(parsed.notes || '').trim(),
+      typeCounts: typeCounts,
+      monotone: monotone,
     },
     dropped: dropped,
     ok: true,

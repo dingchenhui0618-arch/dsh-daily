@@ -271,13 +271,36 @@ export function apply(ctx, config) {
   // raw text of a double failure is kept so the reason is visible in the GUI.
   const STRICT_SUFFIX = '\n\n## 再试一次\n你上一次的回复无法解析成 JSON。这次**只输出那个 JSON 对象本身**，不要 markdown 代码块，不要任何前后文字。'
 
-  async function composeReport(prompt) {
+  // The diversity retry. The brief the model reads is drawn from engineering
+  // memory and conventions, so it defaults to an all-tooling report; the prompt
+  // asks for range, and this is what happens when the model ignores it. It is a
+  // retry rather than a rejection because the content is usually fine — it is
+  // the selection that is narrow.
+  const DIVERSITY_SUFFIX = [
+    '\n\n## 再试一次',
+    '你上一次的回复里所有条目都是同一个 `type`，不符合第 9 条。',
+    '重新出一份：**至少覆盖 3 种 `type`**，并且真的去候选里找游戏、外观、语音、趣味、传播这些分类。',
+    '这位用户是工程师，但他自己写过游戏插件，他的兴趣不限于开发工具。不要再来一份全是工具和门禁的清单。',
+    '其余规则不变。只输出那个 JSON 对象本身，不要任何前后文字。',
+  ].join('\n')
+
+  /**
+   * Ask until the reply is a usable report.
+   *
+   * @param {string} prompt
+   * @param {(parsed:object)=>{accept:boolean,suffix?:string}} [assess]
+   *   Optional extra gate on a parseable reply. Declining it costs one more call.
+   */
+  async function composeReport(prompt, assess) {
     const attempts = []
     let last = { text: '', finish: 'none' }
+    let fallback
+    let suffix = ''
     for (let attempt = 1; attempt <= 2; attempt = attempt + 1) {
-      const result = await ask(attempt === 1 ? prompt : prompt + STRICT_SUFFIX)
+      const result = await ask(prompt + suffix)
       if (result.failed !== undefined) {
         attempts.push({ attempt: attempt, failed: result.failed })
+        suffix = STRICT_SUFFIX
         continue
       }
       last = { text: result.text, finish: result.finish, route: result.route }
@@ -288,9 +311,23 @@ export function apply(ctx, config) {
         finish: result.finish,
         parsed: parsed !== undefined,
       })
-      if (parsed !== undefined) {
+      if (parsed === undefined) {
+        suffix = STRICT_SUFFIX
+        continue
+      }
+      const verdict = assess === undefined ? { accept: true } : assess(parsed)
+      if (verdict.accept) {
         return { parsed: parsed, text: result.text, finish: result.finish, route: result.route, attempts: attempts }
       }
+      // A retry for narrowness must never turn a usable report into no report,
+      // so the first parseable answer is held as the floor.
+      if (fallback === undefined) {
+        fallback = { parsed: parsed, text: result.text, finish: result.finish, route: result.route }
+      }
+      suffix = verdict.suffix === undefined ? STRICT_SUFFIX : verdict.suffix
+    }
+    if (fallback !== undefined) {
+      return Object.assign({ attempts: attempts }, fallback)
     }
     return { parsed: undefined, text: last.text, finish: last.finish, route: last.route, attempts: attempts }
   }
@@ -332,7 +369,15 @@ export function apply(ctx, config) {
         maxIdeas: cfg.maxIdeas,
         pastIdeas: ideaTitles,
       })
-      const composed = await composeReport(prompt)
+      const composed = await composeReport(prompt, function (parsed) {
+        // Pure and cheap, so the double validation is not worth caching.
+        const probe = validateReport(parsed, pool.picked, {
+          maxImprovements: cfg.maxImprovements,
+          maxIdeas: cfg.maxIdeas,
+        })
+        if (!probe.report.monotone) return { accept: true }
+        return { accept: false, suffix: DIVERSITY_SUFFIX }
+      })
       if (composed.route === undefined) {
         throw new Error('生成失败：' + composed.attempts.map(function (entry) {
           return entry.failed === undefined ? ('finish ' + entry.finish) : entry.failed
@@ -360,6 +405,8 @@ export function apply(ctx, config) {
         improvements: validation.report.improvements,
         ideas: validation.report.ideas,
         notes: validation.report.notes,
+        typeCounts: validation.report.typeCounts,
+        monotone: validation.report.monotone,
         dropped: validation.dropped,
         parsed: validation.ok,
         // Kept so a reply that parsed to nothing is diagnosable from the GUI

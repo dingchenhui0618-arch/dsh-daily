@@ -25,6 +25,7 @@ function improvement(basedOn, over) {
   return Object.assign({
     basedOn: basedOn,
     title: 'dsh-prepush-guard',
+    type: '工具',
     delta: GOOD_DELTA,
     why: GOOD_WHY,
     gap: '原版只记录事件，不判断该不该放行',
@@ -44,7 +45,7 @@ function goodReply() {
       improvement('evil/hallucinated', { title: 'dsh-evil-guard', why: '这个插件很强大，值得一试' }),
     ],
     ideas: [
-      { title: 'dsh-queue', oneLiner: '把日报变成可执行的开发队列', gap: 'acme/dsh-alpha 只做了一半', evidence: 'acme/dsh-alpha', effort: '1天' },
+      { title: 'dsh-queue', type: '传播', oneLiner: '把日报变成可执行的开发队列', gap: 'acme/dsh-alpha 只做了一半', evidence: 'acme/dsh-alpha', effort: '1天' },
     ],
     notes: '今天四条候选，一条够格。',
   })
@@ -367,6 +368,56 @@ test('a good first reply is not retried', async () => {
   const built = setup()
   await runAndWait(built)
   assert.equal(built.prompts.length, 1)
+})
+
+// The brief the model reads is drawn from engineering memory, so it drifts back
+// to an all-tooling report. The prompt asks for range; these two pin down what
+// happens when that is ignored.
+function narrowReply() {
+  return JSON.stringify({
+    improvements: [improvement('acme/dsh-alpha', { type: '工具' })],
+    ideas: [{ title: 'dsh-x', type: '工具', oneLiner: 'O', gap: 'G', evidence: 'acme/dsh-alpha' }],
+  })
+}
+
+test('a report where every item is one type is retried with a diversity nudge', async () => {
+  const built = setup({ replies: [narrowReply(), goodReply()] })
+  await runAndWait(built)
+  assert.equal(built.prompts.length, 2, 'a narrow report must be asked again')
+  const second = built.prompts[1].messages[0].content[0].text
+  assert.ok(second.includes('至少覆盖 3 种'))
+  assert.ok(second.includes('德州扑克'), 'the nudge must say why range is expected')
+  const report = readReport(built)
+  assert.equal(report.monotone, false)
+  assert.equal(report.reply.attempts.length, 2)
+})
+
+test('a second reply that is still narrow keeps its content instead of losing the day', async () => {
+  const built = setup({ replies: [narrowReply(), narrowReply()] })
+  await runAndWait(built)
+  assert.equal(built.prompts.length, 2, 'only one retry is allowed')
+  const report = readReport(built)
+  // The first parseable answer is the floor: a retry for narrowness must never
+  // turn a usable report into no report at all.
+  assert.equal(report.monotone, true)
+  assert.equal(report.improvements.length, 1)
+  assert.equal(report.ideas.length, 1)
+  assert.deepEqual(report.typeCounts, { 工具: 2 })
+  const state = await call(built, 'GET', '/dsh-daily/state')
+  assert.equal(state.body.status.lastError, undefined, 'a narrow report is not a failure')
+})
+
+test('a report that omits type is accepted without burning a second call', async () => {
+  const typeless = JSON.stringify({
+    improvements: [improvement('acme/dsh-alpha', { type: undefined })],
+    ideas: [{ title: 'dsh-x', oneLiner: 'O', gap: 'G', evidence: 'acme/dsh-alpha' }],
+  })
+  const built = setup({ replies: [typeless, goodReply()] })
+  await runAndWait(built)
+  assert.equal(built.prompts.length, 1, 'a missing field is not worth another model call')
+  const report = readReport(built)
+  assert.equal(report.monotone, false)
+  assert.equal(report.improvements[0].type, '未标注')
 })
 
 test('a reply truncated by the token budget is a failure, not a quiet day', async () => {

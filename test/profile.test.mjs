@@ -72,6 +72,32 @@ test('buildProfileBrief carries the profile, the conventions and the installed l
   assert.ok(brief.includes('不要推荐这些'))
 })
 
+test('buildProfileBrief separates his own plugins from the official bundles', () => {
+  // The whole point: the memory and conventions sections are pure engineering,
+  // so without this split the model reads "rigorous engineer" and returns eight
+  // developer tools. dsh-holdem is the standing evidence that it should not.
+  const brief = buildProfileBrief({
+    sources: [],
+    installed: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'dsh-holdem', 'dsh-warden'],
+    missing: [],
+  })
+  assert.ok(brief.includes('非官方来源的插件'))
+  assert.ok(brief.includes('兴趣范围比工程工具宽'))
+  const section = brief.slice(brief.indexOf('非官方来源的插件'))
+  assert.ok(section.includes('- dsh-holdem'))
+  assert.ok(section.includes('- dsh-warden'))
+  assert.ok(!section.includes('- @deepseek-ai/dsh-base'), 'official bundles are not his choices')
+})
+
+test('the non-official section is omitted when everything installed is official', () => {
+  const brief = buildProfileBrief({
+    sources: [],
+    installed: ['@deepseek-ai/dsh-base'],
+    missing: [],
+  })
+  assert.ok(!brief.includes('非官方来源的插件'))
+})
+
 test('buildProfileBrief surfaces unreadable sources instead of hiding them', () => {
   const brief = buildProfileBrief({ sources: [], installed: [], missing: ['记忆画像（C:\\nope）'] })
   assert.ok(brief.includes('读不到的画像来源'))

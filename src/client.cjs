@@ -86,6 +86,7 @@ function IdeaCard(props) {
   return h(Card, { kind: 'dd-idea' },
     h('div', { className: 'dd-row1' },
       h('span', { className: 'dd-name' }, idea.title || '(未命名)'),
+      h('span', { className: 'dd-type' }, idea.type || '未标注'),
       idea.verified
         ? h('span', { className: 'dd-badge dd-ok' }, '证据已核实')
         : h('span', { className: 'dd-badge dd-warn' }, '未经证实'),
@@ -112,6 +113,7 @@ function ImprovementCard(props) {
   return h(Card, { kind: 'dd-improve' },
     h('div', { className: 'dd-row1' },
       h('span', { className: 'dd-name' }, item.title || '(未命名)'),
+      h('span', { className: 'dd-type' }, item.type || '未标注'),
       item.category ? h('span', { className: 'dd-tag' }, item.category) : null,
       item.verified
         ? h('span', { className: 'dd-badge dd-ok' }, '证据已核实')
@@ -257,6 +259,22 @@ function DailyView() {
         })),
     ),
 
+    report && report.typeCounts ? h('div', { className: 'dd-line dd-k' },
+      '类型分布：' + (Object.keys(report.typeCounts).length > 0
+        ? Object.keys(report.typeCounts).sort(function (a, b) {
+          return report.typeCounts[b] - report.typeCounts[a]
+        }).map(function (type) {
+          return type + ' ' + report.typeCounts[type]
+        }).join(' · ')
+        : '（无）'),
+    ) : null,
+
+    // The brief is drawn from engineering memory, so the model drifts back to an
+    // all-tooling report. The host retries once on that; if the second reply is
+    // narrow too the content is kept and the narrowness is stated rather than
+    // silently passed off as a balanced day.
+    report && report.monotone ? h('div', { className: 'dd-err' }, '今天所有条目都是同一个类型（' + Object.keys(report.typeCounts || {})[0] + '），重试一次也没变宽。内容留着，但别把它当成一份均衡的日报。') : null,
+
     report && report.dropped ? h('div', { className: 'dd-line dd-k' },
       '生成时丢弃：幻觉来源 ' + (report.dropped.hallucinated || 0) +
       ' · 没写改什么 ' + (report.dropped.noDelta || 0) +
@@ -264,6 +282,7 @@ function DailyView() {
       ' · 空理由 ' + (report.dropped.noWhy || 0) +
       ' · 套话理由 ' + (report.dropped.boilerplateWhy || 0) +
       ' · 改名重发 ' + (report.dropped.sameName || 0) +
+      ' · 无名字 ' + (report.dropped.noTitle || 0) +
       ' · 残缺 ' + (report.dropped.malformed || 0) +
       ' · 残缺灵感 ' + (report.dropped.malformedIdea || 0),
     ) : null,

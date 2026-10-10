@@ -26,6 +26,9 @@ module.exports = [
   '.dd-row1{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}',
   '.dd-name{font-weight:600;font-size:13px}',
   '.dd-tag{font-size:11px;padding:1px 7px;border-radius:999px;background:color-mix(in srgb,currentColor 9%,transparent);opacity:.8}',
+  // The type label is the one that carries the product rule (a report must not
+  // be all one type), so it is coloured rather than left as a grey tag.
+  '.dd-type{font-size:11px;padding:1px 7px;border-radius:999px;background:color-mix(in srgb,#0891b2 14%,transparent);color:color-mix(in srgb,#0891b2 78%,currentColor);border:1px solid color-mix(in srgb,#0891b2 30%,transparent)}',
   '.dd-actions{margin-left:auto;display:flex;gap:6px}',
   '.dd-line{font-size:12px;margin-top:4px}',
   '.dd-delta{font-size:12.5px}',
