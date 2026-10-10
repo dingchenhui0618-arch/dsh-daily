@@ -1,0 +1,3 @@
+# lib/ is committed build output, so normalise line endings to keep the
+# generated files diffable across machines instead of flipping between LF/CRLF.
+* text=auto eol=lf

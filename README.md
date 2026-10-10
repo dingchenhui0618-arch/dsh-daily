@@ -1,0 +1,131 @@
+# dsh-daily
+
+每天 11:00，把 DSH 插件生态筛一遍，挑出对**你**有用的，再提几个**值得你自己做**的方向；你点一下，活就交给 agent 去做。
+
+A daily brief for DeepSeek Harness. It ranks the plugin ecosystem against your own profile, proposes a few buildable ideas that carry their own evidence, and turns one click into a published plugin repository.
+
+## 它解决什么
+
+插件生态里已经有几千个包，靠人翻是翻不完的。但"每天推荐 N 个"本身没什么价值——真正贵的是**看完之后动手**。所以这个插件把两件事分成不同节拍：
+
+| | 频率 | 成本 | 谁做 |
+| --- | --- | --- | --- |
+| **日报**：候选 + 灵感 | 每天 11:00 自动 | 一次模型调用 | 插件 |
+| **开发 + 发布** | 你点「做这个」才发生 | 一整个开发流程 | agent |
+
+**它不会每天自动造一个仓库。** 那样一个月就是 30 个仓，绝大多数是噪声。批准的权力在你手上，插件只负责把选项摆好、把活递出去。
+
+## 三条硬保证
+
+模型的输出在落到你眼前之前，要过三道纯函数校验（`src/report.js`，全部有单测）：
+
+1. **不许编造插件。** 推荐项的 repo 必须**逐字**命中预筛池；不命中就丢弃并计数。链接也取自语料，不采信模型给的 URL。
+2. **不许说空话。** `why` 为空、或只是「很强大 / 值得一试」这类只有褒义词没有信息量的话，丢弃并计数。
+3. **灵感的证据要么可核验，要么标明是猜的。** `evidence` 必须引用池子里的某个 repo 或一个真实链接；拿不出来就只能写 `无直接证据`，界面上会打上「未经证实」的标记，不会冒充调研结论。
+
+界面上会显示每次生成丢弃了多少条，所以模型糊弄不了你。
+
+## 装
+
+```sh
+# npm 版 CLI 管理的 profile
+dsh plugin --profile <name> add <插件目录>
+
+# 桌面版：desktop profile 由 Electron app 独占，npm 版 CLI 会被拒绝——
+#   error: profile "desktop" is managed exclusively by the Electron application
+# 用它自带的那个 CLI 才行（在 app 的 resources/runtime/cli/bin/dsh 下）：
+"<app>/resources/runtime/cli/bin/dsh" plugin --profile desktop add <插件目录>
+```
+
+装完重启一次，对话视图里会出现「日报」Tab。
+
+## 用
+
+- **立即生成** —— 不用等 11:00，随时手动跑一次。
+- **灵感的「做这个」** —— 批准一个新方向。
+- **推荐的「照这个做一个」** —— 参考某个现存插件做自己的版本（消息里会明确要求说清差异，不许改名发布）。
+- **「不感兴趣」** —— 记进 seen，以后不再出现。
+
+点下去之后，插件**不自己开发**。它把一条消息投递给当前活跃的会话（`ctx.agents.roots()` + `agent.runMaintenance()` + `agent.followup()`，和官方 `dsh-schedule` 投递提醒用的是同一条通路），agent 拿自己的常规工具去干活。
+
+投递的消息里写死了交付契约：
+
+1. 在 `D:\Projects\<插件名>` 起工程，骨架照抄 `dsh-warden`
+2. 写实现和测试，`node --test` 必须全绿，测试不过不许发布
+3. 推送前跑三步检查：密钥扫描、`.gitignore` 核对、无关文件清理
+4. **三步检查任一命中就停下来报告，不许推送**
+5. 全过才 `gh repo create --public --source . --push`
+6. 回报仓库 URL、测试通过数、commit hash
+
+**没有活跃会话时，批准不会丢。** 它进 pending 队列，并在 `agent/created` 时自动重试——和官方提醒"等会话回来再投递"的行为一致。
+
+## 配置
+
+`apply(ctx, config)` 的 config 全部可覆盖：
+
+| key | 默认 | 说明 |
+| --- | --- | --- |
+| `hour` / `minute` | `11` / `0` | 每日触发时刻（本地时间） |
+| `maxCandidates` | `60` | 送进模型的预筛池上限 |
+| `perCategory` | `4` | 每个分类最多进池几个。语料有 23 个分类，所以 4 足够填满 60；设成 2 只能凑到 46 |
+| `maxRecommend` | `10` | 日报最多几条推荐 |
+| `maxIdeas` | `3` | 最多几条灵感 |
+| `historyKeep` | `30` | 保留多少天历史 |
+| `profileName` | `desktop` | 读哪个 profile 的已装插件清单 |
+| `corpusPath` | `$DSH_HOME/daily/corpus.csv` | 语料。不存在时从 `seedCorpus` 复制一份 |
+| `seedCorpus` | 无 | 首次播种来源；不配就是空语料 |
+| `projectsRoot` | `~/Projects` | 交给 agent 的契约里，新工程建在哪 |
+| `templateRoot` | 无 | 骨架照抄哪个现成插件；不配时契约改为描述骨架要求 |
+
+### 本机配置：`$DSH_HOME/daily/config.json`
+
+上面凡是跟**你这台机器**有关的 key（语料在哪、项目建在哪、照抄哪个骨架），都不写进仓库。公开仓库里塞死某台机器的绝对路径，既泄露本机布局，也让别人 clone 下来开箱即废。
+
+本机值放在 `$DSH_HOME/daily/config.json`，插件加载时读：
+
+```json
+{
+  "seedCorpus": "D:\\somewhere\\plugins.csv",
+  "projectsRoot": "D:\\Projects",
+  "templateRoot": "D:\\Projects\\some-skeleton"
+}
+```
+
+优先级：**显式 config > `config.json` > 内置通用默认**。文件坏了（JSON 不合法）只退回默认值，不会让插件加载失败。
+
+## 数据落在哪
+
+| 路径 | 内容 |
+| --- | --- |
+| `$DSH_HOME/daily/corpus.csv` | 插件语料，插件自己持有一份 |
+| `$DSH_HOME/daily/reports/YYYY-MM-DD.json` | 每天的完整日报（含丢弃统计） |
+| `$DSH_HOME/daily/state.json` | seen 列表、历史索引、批准记录 |
+| `$DSH_HOME/daily/approvals.jsonl` | 批准审计流水 |
+
+HTTP 面（挂在 `webServer` 的 `/dsh-daily` 前缀下）：
+
+```
+GET  /dsh-daily/state              配置、状态、当天日报、历史、批准记录
+POST /dsh-daily/run                立即生成（202，异步）
+POST /dsh-daily/approve            { title } 批准灵感，{ repo } 照某个推荐做
+POST /dsh-daily/skip               { repo } 不再出现
+```
+
+## 容错姿态
+
+这个插件任何一处坏掉都不该拖垮 harness，所以：读不到语料、模型路由不可用、模型返回的不是 JSON、stream 以 `finish{kind:'error'}` 结束、agent 正忙——全部降级成界面上的一行状态，不抛异常。`webServer.register` 失败也只是没有 HTTP 面，host 半区和定时器照常工作。缺的画像来源会显式列在 `status`/报告里，而不是悄悄生成一份泛泛的日报。
+
+## 开发
+
+```sh
+node --test          # 88 个测试
+node scripts/build.mjs
+```
+
+零依赖构建：host 半区只 import `node:` 内置模块和同目录兄弟模块，所以复制 `src/*.js` 到 `lib/` 就是完整构建——没有会在安装时挂掉的 devDependency。client 半区是 CJS，构建时把唯一的相对 require（样式表）内联进去，然后用 `new Function()` 编译一次，并在浏览器之外直接 import `lib/index.js` 校验导出，坏构建在构建期就炸。
+
+测试用桩 Context 驱动真实的 `apply()`（`test/host.test.mjs`），跑的是真的排期、真的池子过滤、真的输出校验、真的持久化和真的投递，不是这些逻辑的复刻。`test/corpus.test.mjs` 里有一条直接跑真实 3727 条语料的用例。
+
+## License
+
+MIT
