@@ -57,7 +57,11 @@ test('a live idle agent receives the message as a user turn from this plugin', a
   assert.equal(message.role, 'user')
   assert.equal(message.content[0].type, 'text')
   assert.equal(message.content[0].text, 'hello')
-  assert.deepEqual(message.source, { kind: 'plugin', plugin: 'daily' })
+  // 钉住的是"生产者自有的 kind"，不是某个具体写法：DSH 的 v4 会话格式明确拒收
+  // 裸的 `{ kind: 'plugin', plugin: … }`（报 "format v4 message requires a
+  // producer-owned source kind"）。这条断言以前正好在**要求**那个退役形状，
+  // 所以投递一直是"看起来成功、那一轮必然失败"。别改回 plugin 字段。
+  assert.deepEqual(message.source, { kind: 'plugin:daily' })
   assert.equal(typeof message.id, 'string')
 })
 
@@ -129,6 +133,7 @@ test('buildUserMessage produces the harness message shape', () => {
     id: 'id-1',
     role: 'user',
     content: [{ type: 'text', text: 'body' }],
-    source: { kind: 'plugin', plugin: 'daily' },
+    // 生产者自有的 kind（见上面那条断言的说明）：裸的 plugin 字段会被 v4 拒收。
+    source: { kind: 'plugin:daily' },
   })
 })
