@@ -18,20 +18,30 @@ const CSV = [
   '"Just for Fun","dsh-delta","acme/dsh-delta","https://github.com/acme/dsh-delta","Delta fun"',
 ].join('\n')
 
-const GOOD_WHY = '能接上你现有的自动化流程，省掉每天手工翻生态的时间'
+const GOOD_WHY = '你推送前强制跑三步检查，这件事目前只能靠人工记流程'
+const GOOD_DELTA = '原版只记录事件哈希，我要把它做成推送前可复核的清单，命中就阻断'
+
+function improvement(basedOn, over) {
+  return Object.assign({
+    basedOn: basedOn,
+    title: 'dsh-prepush-guard',
+    delta: GOOD_DELTA,
+    why: GOOD_WHY,
+    gap: '原版只记录事件，不判断该不该放行',
+    evidence: 'acme/dsh-alpha 只做了一半',
+    effort: '1天',
+  }, over || {})
+}
 
 function goodReply() {
   return JSON.stringify({
-    picks: [
-      { repo: 'acme/dsh-alpha', why: GOOD_WHY },
+    improvements: [
+      improvement('acme/dsh-alpha'),
       // In the corpus but justified with pure praise: dropped as boilerplate.
-      { repo: 'acme/dsh-beta', why: '很强大，值得一试' },
+      improvement('acme/dsh-beta', { title: 'dsh-beta-guard', why: '很强大，值得一试' }),
       // Not in the corpus at all: dropped as a hallucination. Its hollow why is
       // never inspected, so this one must NOT also bump the boilerplate count.
-      { repo: 'evil/hallucinated', why: '这个插件很强大，值得一试' },
-    ],
-    ideas: [
-      { title: 'dsh-queue', oneLiner: '把日报变成可执行的开发队列', gap: 'acme/dsh-alpha 只做了一半', evidence: 'acme/dsh-alpha', effort: '1天' },
+      improvement('evil/hallucinated', { title: 'dsh-evil-guard', why: '这个插件很强大，值得一试' }),
     ],
     notes: '今天四条候选，一条够格。',
   })
@@ -118,7 +128,7 @@ function setup(options) {
           return
         }
         if (opts.finishLength) {
-          yield { type: 'text-delta', text: '{"picks":[' }
+          yield { type: 'text-delta', text: '{"improvements":[' }
           yield { type: 'finish', reason: { kind: 'length' } }
           return
         }
@@ -161,8 +171,7 @@ function setup(options) {
     dataDir: dataDir,
     corpusPath: corpusPath,
     maxCandidates: 10,
-    maxRecommend: 5,
-    maxIdeas: 2,
+    maxImprovements: 5,
     seedCorpus: join(home, 'no-such-seed.csv'),
   }, opts.config)
 
@@ -238,28 +247,29 @@ test('GET state reports config and status before any run', async () => {
   const state = await call(built, 'GET', '/dsh-daily/state')
   assert.equal(state.status, 200)
   assert.equal(state.body.config.hour, 11)
-  assert.equal(state.body.config.maxRecommend, 5)
+  assert.equal(state.body.config.maxImprovements, 5)
   assert.equal(state.body.status.running, false)
   assert.equal(state.body.today, undefined)
 })
 
-test('a run writes a report whose picks all come from the corpus', async () => {
+test('a run writes a report whose improvements all anchor on corpus repos', async () => {
   const built = setup()
   await runAndWait(built)
   const report = readReport(built)
 
-  assert.equal(report.picks.length, 1, 'the hallucinated pick must not survive')
-  assert.equal(report.picks[0].repo, 'acme/dsh-alpha')
-  assert.equal(report.picks[0].url, 'https://github.com/acme/dsh-alpha')
+  assert.equal(report.improvements.length, 1, 'the hallucinated source must not survive')
+  assert.equal(report.improvements[0].basedOn, 'acme/dsh-alpha')
+  assert.equal(report.improvements[0].basedOnUrl, 'https://github.com/acme/dsh-alpha')
+  assert.equal(report.improvements[0].title, 'dsh-prepush-guard')
+  assert.equal(report.improvements[0].verified, true)
   assert.equal(report.dropped.hallucinated, 1)
-  // Checks run in order, so a hallucinated pick is counted once, as a
-  // hallucination. The boilerplate count is exactly one — the in-pool pick that
+  // Checks run in order, so a hallucinated source is counted once, as a
+  // hallucination. The boilerplate count is exactly one — the in-pool item that
   // was praised instead of justified — which is what proves the two counters
   // are not double-counting the same entry.
   assert.equal(report.dropped.boilerplateWhy, 1)
   assert.equal(report.dropped.noWhy, 0)
-  assert.equal(report.ideas.length, 1)
-  assert.equal(report.ideas[0].verified, true)
+  assert.equal(report.dropped.sameName, 0)
   assert.equal(report.model, 'test-provider/test-model')
   assert.equal(report.corpus.total, 4)
   assert.equal(report.trigger, 'manual')
@@ -295,7 +305,7 @@ test('the model is called with the configured route and the editor system prompt
   assert.equal(call0.provider, 'test-provider')
   assert.equal(call0.model, 'test-model')
   assert.equal(call0.reasoningEffort, 'medium')
-  assert.ok(call0.system.includes('每日选品编辑'))
+  assert.ok(call0.system.includes('每日改进编辑'))
   assert.equal(call0.messages[0].source.plugin, 'daily')
 })
 
@@ -319,8 +329,7 @@ test('a reply that is not JSON yields an empty report rather than inventing one'
   const built = setup({ reply: '抱歉，我今天不想工作。' })
   await runAndWait(built)
   const report = readReport(built)
-  assert.deepEqual(report.picks, [])
-  assert.deepEqual(report.ideas, [])
+  assert.deepEqual(report.improvements, [])
   assert.equal(report.parsed, false)
   // The reply must be kept and the failure surfaced: an empty report that reads
   // as "nothing good today" would hide a broken generation.
@@ -338,8 +347,8 @@ test('a first reply that is not JSON is retried, and the retry is the one used',
   assert.ok(built.prompts[1].messages[0].content[0].text.includes('再试一次'))
   const report = readReport(built)
   assert.equal(report.parsed, true)
-  assert.equal(report.picks.length, 1)
-  assert.equal(report.picks[0].repo, 'acme/dsh-alpha')
+  assert.equal(report.improvements.length, 1)
+  assert.equal(report.improvements[0].basedOn, 'acme/dsh-alpha')
   assert.equal(report.reply.attempts.length, 2)
   const state = await call(built, 'GET', '/dsh-daily/state')
   assert.equal(state.body.status.lastError, undefined, 'a recovered run must not report a failure')
@@ -358,7 +367,7 @@ test('a reply truncated by the token budget is a failure, not a quiet day', asyn
   assert.ok(state.body.status.lastError.includes('length'), 'got: ' + state.body.status.lastError)
   assert.equal(state.body.today.parsed, false)
   assert.equal(state.body.today.reply.finish, 'length')
-  assert.equal(state.body.today.reply.chars, 10)
+  assert.equal(state.body.today.reply.chars, 17)
 })
 
 test('approving an unknown target is refused', async () => {
@@ -369,36 +378,40 @@ test('approving an unknown target is refused', async () => {
   assert.equal(result.body.error, 'unknown-approval-target')
 })
 
-test('approving an idea hands it to the live agent with the hard gates attached', async () => {
+test('approving an improvement hands it over with the hard gates attached', async () => {
   const built = setup()
   await runAndWait(built)
-  const result = await call(built, 'POST', '/dsh-daily/approve', { title: 'dsh-queue' })
+  const result = await call(built, 'POST', '/dsh-daily/approve', { title: 'dsh-prepush-guard' })
   assert.equal(result.status, 200)
   assert.equal(result.body.ok, true)
   assert.equal(result.body.delivered, true)
   assert.equal(built.followups.length, 1)
   const text = built.followups[0].content[0].text
   assert.ok(text.includes('[DAILY APPROVAL]'))
-  assert.ok(text.includes('dsh-queue'))
+  assert.ok(text.includes('dsh-prepush-guard'))
+  assert.ok(text.includes('原版（别人已发布的）：acme/dsh-alpha'))
   assert.ok(text.includes('绝对不要推送'))
-  assert.ok(text.includes('gh repo create --public --source . --push'))
+  // The rule this plugin exists to enforce now: an independent repository,
+  // never a fork of the source it improves on.
+  assert.ok(text.includes('独立实现，不要 fork'))
+  assert.ok(text.includes('gh repo create <你自己的项目名> --public --source . --push'))
   assert.ok(text.includes('零依赖构建'))
 })
 
-test('approving a recommended plugin asks for a build-your-own, not a clone', async () => {
+test('approving by its source repo hands over the same contract', async () => {
   const built = setup()
   await runAndWait(built)
-  const result = await call(built, 'POST', '/dsh-daily/approve', { repo: 'acme/dsh-alpha' })
+  const result = await call(built, 'POST', '/dsh-daily/approve', { basedOn: 'acme/dsh-alpha' })
   assert.equal(result.body.delivered, true)
   const text = built.followups[0].content[0].text
-  assert.ok(text.includes('照这个做一个'))
-  assert.ok(text.includes('不许换个名字'))
+  assert.ok(text.includes('独立实现，不要 fork'))
+  assert.ok(text.includes('原版（别人已发布的）：acme/dsh-alpha'))
 })
 
 test('an approval with no live session is recorded as undelivered instead of lost', async () => {
   const built = setup({ noAgent: true })
   await runAndWait(built)
-  const result = await call(built, 'POST', '/dsh-daily/approve', { title: 'dsh-queue' })
+  const result = await call(built, 'POST', '/dsh-daily/approve', { title: 'dsh-prepush-guard' })
   assert.equal(result.body.ok, true)
   assert.equal(result.body.delivered, false)
   assert.equal(result.body.reason, 'no-live-session')
@@ -412,7 +425,7 @@ test('an approval with no live session is recorded as undelivered instead of los
 test('a pending approval is retried when a root agent appears', async () => {
   const built = setup({ noAgent: true })
   await runAndWait(built)
-  await call(built, 'POST', '/dsh-daily/approve', { title: 'dsh-queue' })
+  await call(built, 'POST', '/dsh-daily/approve', { title: 'dsh-prepush-guard' })
 
   const created = built.listeners.find(function (item) { return item.name === 'agent/created' })
   assert.ok(created !== undefined, 'must listen for agent/created to retry approvals')
@@ -430,7 +443,7 @@ test('a pending approval is retried when a root agent appears', async () => {
 test('a busy agent leaves the approval queued', async () => {
   const built = setup({ agentBusy: true })
   await runAndWait(built)
-  const result = await call(built, 'POST', '/dsh-daily/approve', { title: 'dsh-queue' })
+  const result = await call(built, 'POST', '/dsh-daily/approve', { title: 'dsh-prepush-guard' })
   assert.equal(result.body.delivered, false)
   assert.equal(result.body.reason, 'busy')
   const state = await call(built, 'GET', '/dsh-daily/state')
@@ -499,7 +512,7 @@ test('the shipped defaults carry no machine-specific paths', () => {
 test('with no local template configured the approval contract still describes the skeleton', async () => {
   const built = setup()
   await runAndWait(built)
-  await call(built, 'POST', '/dsh-daily/approve', { title: 'dsh-queue' })
+  await call(built, 'POST', '/dsh-daily/approve', { title: 'dsh-prepush-guard' })
   const text = built.followups[0].content[0].text
   assert.ok(text.includes('零依赖构建'))
   assert.ok(text.includes('cordis.patch.yml'))

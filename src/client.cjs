@@ -81,13 +81,13 @@ function Card(props) {
   return h('div', { className: 'dd-card ' + props.kind }, props.children)
 }
 
-function IdeaCard(props) {
-  const idea = props.idea
-  return h(Card, { kind: 'dd-idea' },
+function ImprovementCard(props) {
+  const item = props.item
+  return h(Card, { kind: 'dd-improve' },
     h('div', { className: 'dd-row1' },
-      h('span', { className: 'dd-name' }, idea.title || '(未命名)'),
-      h('span', { className: 'dd-tag' }, '建议你做的'),
-      idea.verified
+      h('span', { className: 'dd-name' }, item.title || '(未命名)'),
+      item.category ? h('span', { className: 'dd-tag' }, item.category) : null,
+      item.verified
         ? h('span', { className: 'dd-badge dd-ok' }, '证据已核实')
         : h('span', { className: 'dd-badge dd-warn' }, '未经证实'),
       h('div', { className: 'dd-actions' },
@@ -95,42 +95,26 @@ function IdeaCard(props) {
           className: 'dd-btn dd-primary',
           type: 'button',
           disabled: props.busy,
-          onClick: function () { props.onApprove({ title: idea.title }) },
+          onClick: function () { props.onApprove({ basedOn: item.basedOn, title: item.title }) },
         }, props.busy ? '投递中…' : '做这个'),
-      ),
-    ),
-    h('div', { className: 'dd-line' }, idea.oneLiner),
-    h('div', { className: 'dd-line' }, h('span', { className: 'dd-k' }, '缺口：'), idea.gap),
-    h('div', { className: 'dd-line' },
-      h('span', { className: 'dd-k' }, '证据：'), idea.evidence,
-      h('span', { className: 'dd-k' }, '  预估：' + (idea.effort || '未知')),
-    ),
-  )
-}
-
-function PickCard(props) {
-  const pick = props.pick
-  return h(Card, { kind: 'dd-pick' },
-    h('div', { className: 'dd-row1' },
-      h('span', { className: 'dd-name' }, pick.name),
-      pick.category ? h('span', { className: 'dd-tag' }, pick.category) : null,
-      h('div', { className: 'dd-actions' },
         h('button', {
           className: 'dd-btn',
           type: 'button',
-          disabled: props.busy,
-          onClick: function () { props.onApprove({ repo: pick.repo }) },
-        }, '照这个做一个'),
-        h('button', {
-          className: 'dd-btn',
-          type: 'button',
-          onClick: function () { props.onSkip(pick.repo) },
+          onClick: function () { props.onSkip(item.basedOn) },
         }, '不感兴趣'),
       ),
     ),
-    h('div', { className: 'dd-line' }, pick.why),
+    h('div', { className: 'dd-line dd-delta' },
+      h('span', { className: 'dd-k' }, '改什么：'), item.delta),
+    h('div', { className: 'dd-line' }, h('span', { className: 'dd-k' }, '为什么：'), item.why),
+    h('div', { className: 'dd-line' }, h('span', { className: 'dd-k' }, '缺口：'), item.gap),
     h('div', { className: 'dd-line' },
-      h('a', { className: 'dd-link', href: pick.url, target: '_blank', rel: 'noreferrer' }, pick.repo),
+      h('span', { className: 'dd-k' }, '原版：'),
+      h('a', { className: 'dd-link', href: item.basedOnUrl, target: '_blank', rel: 'noreferrer' }, item.basedOn),
+      h('span', { className: 'dd-k' }, '  预估：' + (item.effort || '未知')),
+    ),
+    h('div', { className: 'dd-line' },
+      h('span', { className: 'dd-k' }, '证据：'), item.evidence,
     ),
   )
 }
@@ -146,18 +130,17 @@ function DailyView() {
   const status = (data && data.status) || {}
   const config = (data && data.config) || {}
   const history = (data && data.history) || []
-  const ideas = (report && report.ideas) || []
-  const picks = (report && report.picks) || []
+  const improvements = (report && report.improvements) || []
 
   function approve(target) {
-    const label = target.title || target.repo
+    const label = target.title || target.basedOn
     setBusy(label)
     setNote('')
     post('approve', target).then(function (result) {
       setBusy('')
       if (result && result.ok) {
         setNote(result.delivered
-          ? '已投递给当前会话，agent 会接手开发并发布。'
+          ? '已投递给当前会话，agent 会独立实现并发布到你自己的仓库。'
           : '已记录，但没能投递（' + (result.reason || '无活跃会话') + '）。等会话空闲后会自动重试。')
       } else {
         setNote('批准失败：' + ((result && (result.error || result.reason)) || '未知错误'))
@@ -199,34 +182,34 @@ function DailyView() {
     report && report.notes ? h('div', { className: 'dd-notes' }, '今日一句话：' + report.notes) : null,
 
     h('div', { className: 'dd-sec' },
-      h('h4', null, '灵感（建议你做的）', h('span', { className: 'dd-count' }, ideas.length + ' 条')),
-      ideas.length === 0
-        ? h('div', { className: 'dd-empty' }, '今天没有够格的灵感。宁缺勿滥——拿不出生态缺口证据的方向不会被列出来。')
-        : h('div', { className: 'dd-list' }, ideas.map(function (idea, i) {
-          return h(IdeaCard, { key: 'idea-' + i, idea: idea, busy: busy === idea.title, onApprove: approve })
-        })),
-    ),
-
-    h('div', { className: 'dd-sec' },
-      h('h4', null, '今日推荐', h('span', { className: 'dd-count' }, picks.length + ' 条')),
-      picks.length === 0
-        ? h('div', { className: 'dd-empty' }, '今天没有合格推荐。')
-        : h('div', { className: 'dd-list' }, picks.map(function (pick, i) {
-          return h(PickCard, { key: 'pick-' + i, pick: pick, busy: busy === pick.repo, onApprove: approve, onSkip: skip })
+      h('h4', null, '改进项（在别人的作品上往前走一步）', h('span', { className: 'dd-count' }, improvements.length + ' 条')),
+      improvements.length === 0
+        ? h('div', { className: 'dd-empty' }, '今天没有够格的改进项。宁缺勿滥——说不出具体改什么的方向不会被列出来。')
+        : h('div', { className: 'dd-list' }, improvements.map(function (item, i) {
+          return h(ImprovementCard, {
+            key: 'improve-' + i,
+            item: item,
+            busy: busy === item.title,
+            onApprove: approve,
+            onSkip: skip,
+          })
         })),
     ),
 
     report && report.dropped ? h('div', { className: 'dd-line dd-k' },
-      '生成时丢弃：幻觉插件 ' + (report.dropped.hallucinated || 0) +
+      '生成时丢弃：幻觉来源 ' + (report.dropped.hallucinated || 0) +
+      ' · 没写改什么 ' + (report.dropped.noDelta || 0) +
+      ' · 空话改法 ' + (report.dropped.hollowDelta || 0) +
       ' · 空理由 ' + (report.dropped.noWhy || 0) +
       ' · 套话理由 ' + (report.dropped.boilerplateWhy || 0) +
-      ' · 残缺灵感 ' + (report.dropped.malformedIdea || 0),
+      ' · 改名重发 ' + (report.dropped.sameName || 0) +
+      ' · 残缺 ' + (report.dropped.malformed || 0),
     ) : null,
 
     history.length > 0 ? h('div', { className: 'dd-sec' },
       h('h4', null, '历史'),
       h('div', { className: 'dd-hist' }, history.map(function (item) {
-        return h('span', { key: item.date }, item.date + '（' + item.picks + '/' + item.ideas + '）')
+        return h('span', { key: item.date }, item.date + '（' + item.improvements + ' 项）')
       })),
     ) : null,
   )

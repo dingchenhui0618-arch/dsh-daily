@@ -1,8 +1,8 @@
 # dsh-daily
 
-每天 11:00，把 DSH 插件生态筛一遍，挑出对**你**有用的，再提几个**值得你自己做**的方向；你点一下，活就交给 agent 去做。
+每天 11:00，把 DSH 插件生态里的**别人已经发布的插件**筛一遍，挑出值得**二次微调或功能优化**的，给出具体改法；你点一下，agent 就独立实现一个更好的版本，发到**你自己的**仓库。
 
-A daily brief for DeepSeek Harness. It ranks the plugin ecosystem against your own profile, proposes a few buildable ideas that carry their own evidence, and turns one click into a published plugin repository.
+A daily improvement brief for DeepSeek Harness. It reads the published plugin ecosystem against your own profile, proposes concrete deltas on other people's work with evidence for each gap, and turns one click into an independently implemented repository — never a fork.
 
 ## 它解决什么
 
@@ -10,20 +10,34 @@ A daily brief for DeepSeek Harness. It ranks the plugin ecosystem against your o
 
 | | 频率 | 成本 | 谁做 |
 | --- | --- | --- | --- |
-| **日报**：候选 + 灵感 | 每天 11:00 自动 | 一次模型调用 | 插件 |
+| **日报**：改进项 + 证据 | 每天 11:00 自动 | 一次模型调用 | 插件 |
 | **开发 + 发布** | 你点「做这个」才发生 | 一整个开发流程 | agent |
 
 **它不会每天自动造一个仓库。** 那样一个月就是 30 个仓，绝大多数是噪声。批准的权力在你手上，插件只负责把选项摆好、把活递出去。
 
-## 三条硬保证
+**它也不是选品清单。** 每一条输出的核心是 `delta`：**原版是 A，我要做成 B**。只写「做得更好」「增强体验」这类空话的会被直接丢弃——因为那种话读起来像答案，实际什么都没说。
 
-模型的输出在落到你眼前之前，要过三道纯函数校验（`src/report.js`，全部有单测）：
+## 独立实现，不是 fork
 
-1. **不许编造插件。** 推荐项的 repo 必须**逐字**命中预筛池；不命中就丢弃并计数。链接也取自语料，不采信模型给的 URL。
-2. **不许说空话。** `why` 为空、或只是「很强大 / 值得一试」这类只有褒义词没有信息量的话，丢弃并计数。
-3. **灵感的证据要么可核验，要么标明是猜的。** `evidence` 必须引用池子里的某个 repo 或一个真实链接；拿不出来就只能写 `无直接证据`，界面上会打上「未经证实」的标记，不会冒充调研结论。
+这是这个插件的硬规则，也是它和"fork 别人的仓改一改"的根本区别：
 
-界面上会显示每次生成丢弃了多少条，所以模型糊弄不了你。
+- 禁止 `gh repo fork`；禁止 clone 原仓库后在它基础上改；禁止整段搬运原版代码。
+- 建的是**你自己的**仓库（`gh repo create <你的项目名>`），不是从原仓库派生。
+- README 里必须写明灵感来自哪个原仓库（带 URL），并说清你做了什么不同。
+- 确实需要复用原版代码片段时，先确认它的 LICENSE 允许，并在文件里保留原版权声明。
+
+**借鉴思路可以，复制代码不行。** 所以校验里还有一条：如果模型把 `title` 写成原仓库的名字（`dsh-alpha`、`DSH Alpha`、`acme/dsh-alpha` 都算），这条会被当作"改名重发"丢弃并计数。
+
+## 四条硬保证
+
+模型的输出在落到你眼前之前，要过四道纯函数校验（`src/report.js`，全部有单测）：
+
+1. **不许编造来源。** 每条改进的 `basedOn` 必须**逐字**命中预筛池；不命中就丢弃并计数。链接和分类也取自语料，不采信模型给的 URL。
+2. **不许说空话。** `delta` 为空、或只是「做得更好 / 增强体验 / 优化性能」这类空话，丢弃并计数。`why` 同理（「很强大 / 值得一试」会被丢弃）。
+3. **不许改名重发。** `title` 撞上原仓库的名字就丢弃并计数，见上一节。
+4. **证据要么可核验，要么标明是猜的。** `evidence` 必须引用池子里的某个 repo 或一个真实链接；拿不出来就只能写 `无直接证据`，界面上会打上「未经证实」的标记，不会冒充调研结论。
+
+界面上会显示每次生成丢弃了多少条、分别因为什么被丢，所以模型糊弄不了你。
 
 ## 装
 
@@ -39,23 +53,26 @@ dsh plugin --profile <name> add <插件目录>
 
 装完重启一次，对话视图里会出现「日报」Tab。
 
+> **改 host 半区必须重启 app。** Node 按 URL 缓存 ES 模块，`plugin_manager` 的关开、
+> 甚至卸载 bundle 再装回，都不会换掉已经加载的 host 代码。客户端半区可以热更新，host 不行。
+
 ## 用
 
 - **立即生成** —— 不用等 11:00，随时手动跑一次。
-- **灵感的「做这个」** —— 批准一个新方向。
-- **推荐的「照这个做一个」** —— 参考某个现存插件做自己的版本（消息里会明确要求说清差异，不许改名发布）。
-- **「不感兴趣」** —— 记进 seen，以后不再出现。
+- **「做这个」** —— 批准一条改进，把它投给当前会话。
+- **「不感兴趣」** —— 把这条的来源记进 seen，以后不再出现。
 
 点下去之后，插件**不自己开发**。它把一条消息投递给当前活跃的会话（`ctx.agents.roots()` + `agent.runMaintenance()` + `agent.followup()`，和官方 `dsh-schedule` 投递提醒用的是同一条通路），agent 拿自己的常规工具去干活。
 
 投递的消息里写死了交付契约：
 
-1. 在 `D:\Projects\<插件名>` 起工程，骨架照抄 `dsh-warden`
-2. 写实现和测试，`node --test` 必须全绿，测试不过不许发布
-3. 推送前跑三步检查：密钥扫描、`.gitignore` 核对、无关文件清理
-4. **三步检查任一命中就停下来报告，不许推送**
-5. 全过才 `gh repo create --public --source . --push`
-6. 回报仓库 URL、测试通过数、commit hash
+1. **独立实现，不要 fork。** 禁止 `gh repo fork`；禁止 clone 原仓库改；禁止整段搬运原版代码
+2. 在 `D:\Projects\<你自己的项目名>` 起工程，骨架照抄 `dsh-warden`
+3. 写实现和测试，`node --test` 必须全绿，测试不过不许发布
+4. 推送前跑三步检查：密钥扫描、`.gitignore` 核对、无关文件清理
+5. **三步检查任一命中就停下来报告，不许推送**
+6. 全过才用 `gh repo create <你自己的项目名> --public --source . --push` 建**你自己的**仓库
+7. 回报仓库 URL、测试通过数、commit hash、三步检查结果，以及**你和原版的具体差异**
 
 **没有活跃会话时，批准不会丢。** 它进 pending 队列，并在 `agent/created` 时自动重试——和官方提醒"等会话回来再投递"的行为一致。
 
@@ -68,8 +85,7 @@ dsh plugin --profile <name> add <插件目录>
 | `hour` / `minute` | `11` / `0` | 每日触发时刻（本地时间） |
 | `maxCandidates` | `60` | 送进模型的预筛池上限 |
 | `perCategory` | `4` | 每个分类最多进池几个。语料有 23 个分类，所以 4 足够填满 60；设成 2 只能凑到 46 |
-| `maxRecommend` | `10` | 日报最多几条推荐 |
-| `maxIdeas` | `3` | 最多几条灵感 |
+| `maxImprovements` | `10` | 日报最多几条改进项 |
 | `maxTokens` | `8000` | 单次生成的最大输出 token。要留出推理余量：推理 token 也算在里面 |
 | `historyKeep` | `30` | 保留多少天历史 |
 | `profileName` | `desktop` | 读哪个 profile 的已装插件清单 |
@@ -99,7 +115,7 @@ dsh plugin --profile <name> add <插件目录>
 | 路径 | 内容 |
 | --- | --- |
 | `$DSH_HOME/daily/corpus.csv` | 插件语料，插件自己持有一份 |
-| `$DSH_HOME/daily/reports/YYYY-MM-DD.json` | 每天的完整日报（含丢弃统计） |
+| `$DSH_HOME/daily/reports/YYYY-MM-DD.json` | 每天的完整日报（含丢弃统计与原始回复） |
 | `$DSH_HOME/daily/state.json` | seen 列表、历史索引、批准记录 |
 | `$DSH_HOME/daily/approvals.jsonl` | 批准审计流水 |
 
@@ -108,7 +124,7 @@ HTTP 面（挂在 `webServer` 的 `/dsh-daily` 前缀下）：
 ```
 GET  /dsh-daily/state              配置、状态、当天日报、历史、批准记录
 POST /dsh-daily/run                立即生成（202，异步）
-POST /dsh-daily/approve            { title } 批准灵感，{ repo } 照某个推荐做
+POST /dsh-daily/approve            { title } 按项目名批准，或 { basedOn } 按来源批准
 POST /dsh-daily/skip               { repo } 不再出现
 ```
 
@@ -126,7 +142,7 @@ POST /dsh-daily/skip               { repo } 不再出现
 ## 开发
 
 ```sh
-node --test          # 88 个测试
+node --test          # 101 个测试
 node scripts/build.mjs
 ```
 

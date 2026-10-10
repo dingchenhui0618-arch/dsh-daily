@@ -2,12 +2,18 @@ import test from 'node:test'
 import { strict as assert } from 'node:assert'
 import { buildApprovalMessage, buildUserMessage, deliverToAgent } from '../src/deliver.js'
 
-const IDEA = {
-  title: 'dsh-example',
-  oneLiner: '把每日候选变成可执行的开发队列',
-  gap: '生态里没有把选品和开发连起来的插件',
-  evidence: '无直接证据',
+const IMPROVEMENT = {
+  basedOn: 'acme/dsh-alpha',
+  basedOnName: 'dsh-alpha',
+  basedOnUrl: 'https://github.com/acme/dsh-alpha',
+  category: 'Workflow & Automation',
+  title: 'dsh-prepush-guard',
+  delta: '原版只记录事件哈希，我要把它做成推送前可复核的清单，命中就阻断',
+  why: '你推送前强制跑三步检查，这件事目前只能靠人工记流程',
+  gap: '原版只记录事件，不判断该不该放行',
+  evidence: 'acme/dsh-alpha 只做了一半',
   effort: '1天',
+  verified: true,
 }
 
 function agentStub(id, behaviour) {
@@ -104,27 +110,47 @@ test('an agent without the required API is skipped, not crashed on', async () =>
 })
 
 test('the approval message carries every hard gate', () => {
-  const text = buildApprovalMessage(IDEA, { projectsRoot: 'D:\\Projects', templateRoot: 'D:\\Projects\\dsh-warden' })
+  const text = buildApprovalMessage(IMPROVEMENT, { projectsRoot: 'D:\\Projects', templateRoot: 'D:\\Projects\\dsh-warden' })
   assert.ok(text.includes('[DAILY APPROVAL]'))
-  assert.ok(text.includes('dsh-example'))
+  assert.ok(text.includes('dsh-prepush-guard'))
   assert.ok(text.includes('推送前跑三步检查'))
   assert.ok(text.includes('绝对不要推送'))
-  assert.ok(text.includes('gh repo create --public --source . --push'))
+  assert.ok(text.includes('gh repo create <你自己的项目名> --public --source . --push'))
   assert.ok(text.includes('node --test'))
   assert.ok(text.includes('D:\\Projects\\dsh-warden'))
+  // The reframing that matters: this is an improvement ON someone else's work.
+  assert.ok(text.includes('原版（别人已发布的）：acme/dsh-alpha'))
+  assert.ok(text.includes('https://github.com/acme/dsh-alpha'))
+  assert.ok(text.includes(IMPROVEMENT.delta))
 })
 
-test('a reference-mode approval is framed as build-your-own, not reimplement', () => {
-  const text = buildApprovalMessage(Object.assign({ mode: 'reference' }, IDEA), {})
-  assert.ok(text.includes('照这个做一个'))
-  assert.ok(text.includes('参考对象（不是要复刻它）'))
-  assert.ok(text.includes('不许换个名字'))
+// The user's rule, stated as a hard gate: an independent repository, never a
+// fork. Without this the most natural "helpful" move is `gh repo fork`.
+test('the contract forbids forking, cloning and lifting the original code', () => {
+  const text = buildApprovalMessage(IMPROVEMENT, {})
+  assert.ok(text.includes('独立实现，不要 fork'))
+  assert.ok(text.includes('禁止 `gh repo fork`'))
+  assert.ok(text.includes('禁止 clone 原仓库'))
+  assert.ok(text.includes('禁止整段搬运原版代码'))
+  assert.ok(text.includes('建**你自己的**仓库'))
+  // Borrowing an idea is fine; copying code is not, and the README must say so.
+  assert.ok(text.includes('灵感来自哪个原仓库'))
+  assert.ok(text.includes('保留原版权声明'))
 })
 
-test('a build-mode approval uses the approved-direction framing', () => {
-  const text = buildApprovalMessage(Object.assign({ mode: 'build' }, IDEA), {})
-  assert.ok(text.includes('## 已批准的方向'))
-  assert.ok(!text.includes('参考对象（不是要复刻它）'))
+test('the contract restates the approved delta, why and gap verbatim', () => {
+  const text = buildApprovalMessage(IMPROVEMENT, {})
+  assert.ok(text.includes('具体改什么：' + IMPROVEMENT.delta))
+  assert.ok(text.includes('为什么值得做：' + IMPROVEMENT.why))
+  assert.ok(text.includes('原版的缺口：' + IMPROVEMENT.gap))
+  assert.ok(text.includes('证据：' + IMPROVEMENT.evidence))
+  assert.ok(!text.includes('参考对象'), 'the old copy-this framing is gone')
+})
+
+test('a missing source URL does not leak undefined into the contract', () => {
+  const text = buildApprovalMessage(Object.assign({}, IMPROVEMENT, { basedOnUrl: '' }), {})
+  assert.ok(text.includes('原版（别人已发布的）：acme/dsh-alpha'))
+  assert.ok(!text.includes('undefined'))
 })
 
 test('buildUserMessage produces the harness message shape', () => {
