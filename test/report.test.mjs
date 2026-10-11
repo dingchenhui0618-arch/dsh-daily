@@ -6,6 +6,7 @@ import {
   buildReportPrompt,
   normaliseType,
   parseReportJson,
+  salvageReport,
   sameName,
   validateReport,
 } from '../src/report.js'
@@ -264,6 +265,76 @@ test('parseReportJson returns undefined on unusable replies', () => {
   for (const value of ['', 'no json at all', '{broken', undefined, null]) {
     assert.equal(parseReportJson(value), undefined)
   }
+})
+
+// A reply that ran out of output budget still contains finished items. This is
+// the regression suite for a real failure: eight good improvements were once
+// discarded because the ninth was unterminated, and the user saw "0 条" beside
+// an error message.
+function truncatedReply() {
+  return [
+    '{',
+    '  "improvements": [',
+    '    ' + JSON.stringify(imp('acme/dsh-alpha')),
+    ',',
+    '    ' + JSON.stringify(imp('acme/dsh-beta', { title: 'dsh-two', type: '外观' })),
+    ',',
+    '    {"basedOn":"acme/dsh-alpha","type":"工具","title":"dsh-half","delta":"这一条在写出过程',
+  ].join('\n')
+}
+
+test('salvageReport recovers every item that finished, and only those', () => {
+  const recovered = salvageReport(truncatedReply())
+  assert.ok(recovered !== undefined)
+  assert.equal(recovered.improvements.length, 2)
+  assert.equal(recovered.improvements[0].basedOn, 'acme/dsh-alpha')
+  assert.equal(recovered.improvements[1].type, '外观')
+})
+
+test('salvaged items go through the same validation as any other item', () => {
+  // Salvage may add items; it must never be a way past the gates. The second
+  // item is hollow and must still be dropped.
+  const text = '{"improvements":[' +
+    JSON.stringify(imp('acme/dsh-alpha')) + ',' +
+    JSON.stringify(imp('acme/dsh-beta', { title: 'dsh-hollow', delta: '做得更好' })) +
+    ']}'
+  const out = validateReport(salvageReport(text), pool)
+  assert.equal(out.report.improvements.length, 1)
+  assert.equal(out.dropped.hollowDelta, 1)
+})
+
+test('a brace or bracket inside a string does not confuse the scanner', () => {
+  const text = '{"improvements":[{"basedOn":"acme/dsh-alpha","title":"dsh-x",' +
+    '"delta":"比较 {before} 与 [after]，字符串里还有 } 和 ] 这些字符",' +
+    '"why":"这是一个足够长的真实理由，不是空话",' +
+    '"gap":"缺口在这里","evidence":"acme/dsh-alpha","effort":"1天"}]}'
+  const recovered = salvageReport(text)
+  assert.equal(recovered.improvements.length, 1)
+  assert.ok(recovered.improvements[0].delta.includes('} 和 ]'))
+})
+
+test('salvageReport recovers ideas too, and both lists together', () => {
+  const text = '{"improvements":[' + JSON.stringify(imp('acme/dsh-alpha')) + '],' +
+    '"ideas":[{"title":"dsh-idea","type":"游戏","oneLiner":"一句话","gap":"缺口",' +
+    '"evidence":"无直接证据","effort":"1天"},{"title":"dsh-cut'
+  const recovered = salvageReport(text)
+  assert.equal(recovered.improvements.length, 1)
+  assert.equal(recovered.ideas.length, 1)
+  assert.equal(recovered.ideas[0].type, '游戏')
+})
+
+test('salvageReport returns nothing when nothing finished', () => {
+  // The fragment the earlier truncation test produces: the array opened and no
+  // object ever closed.
+  assert.equal(salvageReport('{"improvements":['), undefined)
+  assert.equal(salvageReport('{"improvements":[{"basedOn":"x","title":"unterminated'), undefined)
+  assert.equal(salvageReport('no json here'), undefined)
+  assert.equal(salvageReport(''), undefined)
+  assert.equal(salvageReport(undefined), undefined)
+})
+
+test('salvageReport ignores empty arrays rather than reporting a hollow success', () => {
+  assert.equal(salvageReport('{"improvements":[],"ideas":[]}'), undefined)
 })
 
 test('normaliseType folds aliases, qualifiers and blanks onto the six types', () => {

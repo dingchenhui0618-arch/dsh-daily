@@ -275,6 +275,13 @@ function DailyView() {
     // silently passed off as a balanced day.
     report && report.monotone ? h('div', { className: 'dd-err' }, '今天所有条目都是同一个类型（' + Object.keys(report.typeCounts || {})[0] + '），重试一次也没变宽。内容留着，但别把它当成一份均衡的日报。') : null,
 
+    // A reply cut off by the token budget is not a failure — the items in hand
+    // are real and were written by the model — but it is not a full report
+    // either, and saying so is the entire reason the flag is tracked.
+    report && report.truncated ? h('div', { className: 'dd-warn' },
+      '回复被输出长度上限截断：写完的 ' + ((report.improvements || []).length + (report.ideas || []).length) +
+      ' 条已保留，其余在写出过程中丢失。配置里调高 maxTokens 可减少这种情况。') : null,
+
     report && report.dropped ? h('div', { className: 'dd-line dd-k' },
       '生成时丢弃：幻觉来源 ' + (report.dropped.hallucinated || 0) +
       ' · 没写改什么 ' + (report.dropped.noDelta || 0) +

@@ -18,7 +18,7 @@ import { join } from 'node:path'
 import { loadCorpus } from './corpus.js'
 import { selectCandidates } from './select.js'
 import { buildProfileBrief, loadProfileSources } from './profile.js'
-import { buildReportPrompt, parseReportJson, validateReport } from './report.js'
+import { buildReportPrompt, parseReportJson, salvageReport, validateReport } from './report.js'
 import { buildApprovalMessage, deliverToAgent } from './deliver.js'
 import { dayKey, missedToday, msUntilNext } from './schedule.js'
 
@@ -33,7 +33,11 @@ const DEFAULT_CONFIG = {
   maxIdeas: 3,
   perCategory: 4,
   historyKeep: 30,
-  maxTokens: 8000,
+  // Raised from 8000 after a real truncation. The report grew when every `delta`
+  // became a concrete sentence, and reasoning tokens count against this budget
+  // on deepseek-flash, so the old figure no longer covered reasoning plus ten
+  // detailed items.
+  maxTokens: 16000,
   profileName: 'desktop',
   // Deliberately no machine-specific paths here: this file ships publicly, and
   // a hard-coded path would also make the plugin useless on anyone else s
@@ -284,6 +288,31 @@ export function apply(ctx, config) {
     '其余规则不变。只输出那个 JSON 对象本身，不要任何前后文字。',
   ].join('\n')
 
+  function itemCount(parsed) {
+    if (parsed === undefined || parsed === null) return -1
+    const improvements = Array.isArray(parsed.improvements) ? parsed.improvements.length : 0
+    const ideas = Array.isArray(parsed.ideas) ? parsed.ideas.length : 0
+    return improvements + ideas
+  }
+
+  // The harness spells the exhausted-budget finish `max-tokens`; `length` is the
+  // other spelling seen for the same condition. Both mean the same thing and
+  // neither is worth getting wrong, so both are recognised.
+  function isTruncated(finish) {
+    return finish === 'max-tokens' || finish === 'length'
+  }
+
+  // The size retry. Asking for the same thing again would run out of budget
+  // again, so this asks for less of it instead — a shorter report that finishes
+  // beats a fuller one that is cut in half.
+  const BUDGET_SUFFIX = [
+    '\n\n## 再试一次',
+    '你上一次的回复**被输出长度上限截断了**，最后一条没有写完。',
+    '这次大幅缩短：**最多 4 个 `improvements`、2 个 `ideas`**，其余规则不变。',
+    '`delta`、`why`、`gap` 每条各控制在 60 字以内，但必须仍然具体——**写不完整不如少写几条**。',
+    '只输出那个 JSON 对象本身，不要任何前后文字。',
+  ].join('\n')
+
   /**
    * Ask until the reply is a usable report.
    *
@@ -294,7 +323,7 @@ export function apply(ctx, config) {
   async function composeReport(prompt, assess) {
     const attempts = []
     let last = { text: '', finish: 'none' }
-    let fallback
+    let best
     let suffix = ''
     for (let attempt = 1; attempt <= 2; attempt = attempt + 1) {
       const result = await ask(prompt + suffix)
@@ -304,35 +333,57 @@ export function apply(ctx, config) {
         continue
       }
       last = { text: result.text, finish: result.finish, route: result.route }
-      const parsed = parseReportJson(result.text)
+
+      const whole = parseReportJson(result.text)
+      const salvaged = whole === undefined ? salvageReport(result.text) : undefined
+      const parsed = whole !== undefined ? whole : salvaged
+      const truncated = isTruncated(result.finish)
       attempts.push({
         attempt: attempt,
         chars: result.text.length,
         finish: result.finish,
         parsed: parsed !== undefined,
+        salvaged: salvaged !== undefined,
+        truncated: truncated,
       })
+
       if (parsed === undefined) {
-        suffix = STRICT_SUFFIX
+        suffix = truncated ? BUDGET_SUFFIX : STRICT_SUFFIX
         continue
       }
+
       const verdict = assess === undefined ? { accept: true } : assess(parsed)
-      if (verdict.accept) {
-        return { parsed: parsed, text: result.text, finish: result.finish, route: result.route, attempts: attempts }
+      const candidate = {
+        parsed: parsed,
+        text: result.text,
+        finish: result.finish,
+        route: result.route,
+        salvaged: salvaged !== undefined,
+        truncated: truncated,
       }
-      // A retry for narrowness must never turn a usable report into no report,
-      // so the first parseable answer is held as the floor.
-      if (fallback === undefined) {
-        fallback = { parsed: parsed, text: result.text, finish: result.finish, route: result.route }
+
+      // A complete answer that also passes the extra gate is final — but only if
+      // it is not a step backwards. A "complete" empty reply must not beat a
+      // truncated one that actually produced items: telling the user there is
+      // nothing worth doing is worse than telling them there is more to come.
+      const better = best === undefined || itemCount(candidate.parsed) >= itemCount(best.parsed)
+      if (verdict.accept && !candidate.salvaged && better) {
+        return Object.assign({ attempts: attempts }, candidate)
       }
-      suffix = verdict.suffix === undefined ? STRICT_SUFFIX : verdict.suffix
+
+      // Otherwise this is the floor: a retry must never turn a usable report into
+      // no report, and if the retry produces more items the better one wins.
+      // Running out of budget outranks the diversity wish — a complete report
+      // matters more than a wider one.
+      if (best === undefined || itemCount(candidate.parsed) > itemCount(best.parsed)) best = candidate
+      suffix = truncated ? BUDGET_SUFFIX : (verdict.suffix === undefined ? STRICT_SUFFIX : verdict.suffix)
     }
-    if (fallback !== undefined) {
-      return Object.assign({ attempts: attempts }, fallback)
-    }
+    if (best !== undefined) return Object.assign({ attempts: attempts }, best)
     return { parsed: undefined, text: last.text, finish: last.finish, route: last.route, attempts: attempts }
   }
 
-  function loadReport(date) {    const raw = readTextFile(join(reportsDir, date + '.json'))
+  function loadReport(date) {
+    const raw = readTextFile(join(reportsDir, date + '.json'))
     if (raw === undefined) return undefined
     try {
       return JSON.parse(raw)
@@ -407,6 +458,11 @@ export function apply(ctx, config) {
         notes: validation.report.notes,
         typeCounts: validation.report.typeCounts,
         monotone: validation.report.monotone,
+        // Honest bookkeeping for a reply that ran out of budget: the items in
+        // hand are real, and the fact that more were cut off is stated rather
+        // than hidden behind a full-looking report.
+        truncated: composed.truncated === true,
+        salvaged: composed.salvaged === true,
         dropped: validation.dropped,
         parsed: validation.ok,
         // Kept so a reply that parsed to nothing is diagnosable from the GUI
@@ -450,8 +506,15 @@ export function apply(ctx, config) {
       } else {
         // An unparseable reply is a generation failure. Saying so is the whole
         // point: an empty report must never be mistaken for a quiet day.
+        // `max-tokens` gets its own sentence because it is the one cause the
+        // user can actually act on, and it is not obvious: reasoning tokens are
+        // counted against the same budget as the JSON.
+        const truncated = isTruncated(composed.finish)
         lastError = '模型没有返回可解析的 JSON（已试 ' + composed.attempts.length + ' 次，最后 finish=' +
-          composed.finish + '，收到 ' + composed.text.length + ' 字符）'
+          composed.finish + '，收到 ' + composed.text.length + ' 字符）' +
+          (truncated
+            ? '。finish=max-tokens 表示输出预算被用尽——推理 token 也计入 maxTokens，可调高 maxTokens 或减少条目数。'
+            : '')
       }
       saveState()
       return {
@@ -616,6 +679,7 @@ export function apply(ctx, config) {
                   minute: cfg.minute,
                   maxImprovements: cfg.maxImprovements,
                   maxIdeas: cfg.maxIdeas,
+                  maxTokens: cfg.maxTokens,
                   corpusPath: corpusPath,
                   reportsDir: reportsDir,
                   profileName: cfg.profileName,

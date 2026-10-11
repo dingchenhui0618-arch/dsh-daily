@@ -137,7 +137,11 @@ function setup(options) {
           return
         }
         yield { type: 'text-delta', text: reply }
-        yield { type: 'finish', reason: { kind: 'stop' } }
+        // `finishKinds` scripts the terminating reason per call, which is what
+        // the truncation path needs: the text arrives, but the budget ran out.
+        const kinds = Array.isArray(opts.finishKinds) ? opts.finishKinds : []
+        const kind = kinds[prompts.length - 1]
+        yield { type: 'finish', reason: { kind: kind === undefined ? 'stop' : kind } }
       })()
     },
   }
@@ -428,6 +432,94 @@ test('a reply truncated by the token budget is a failure, not a quiet day', asyn
   assert.equal(state.body.today.parsed, false)
   assert.equal(state.body.today.reply.finish, 'length')
   assert.equal(state.body.today.reply.chars, 17)
+  // Nothing was recoverable, so the message has to name the one cause the user
+  // can act on rather than leaving them with a bare failure.
+  assert.ok(state.body.status.lastError.includes('maxTokens'), 'got: ' + state.body.status.lastError)
+})
+
+// The regression suite for a real failure: the model wrote several complete
+// improvements, ran out of output budget on the last one, and the whole reply was
+// thrown away — "0 条" next to an error message, with usable work in hand.
+function truncatedGoodReply() {
+  return [
+    '{',
+    '  "improvements": [',
+    '    ' + JSON.stringify(improvement('acme/dsh-alpha')),
+    ',',
+    '    ' + JSON.stringify(improvement('acme/dsh-beta', { title: 'dsh-other', type: '外观' })),
+    ',',
+    '    {"basedOn":"acme/dsh-alpha","type":"工具","title":"dsh-unfinished","delta":"这条还没写完',
+  ].join('\n')
+}
+
+test('a truncated reply keeps every item that finished instead of losing the day', async () => {
+  const built = setup({
+    replies: [truncatedGoodReply(), goodReply()],
+    finishKinds: ['max-tokens', 'stop'],
+  })
+  await runAndWait(built)
+
+  const report = readReport(built)
+  assert.equal(report.truncated, false, 'the retry produced a complete reply, so this is the one used')
+  assert.equal(report.parsed, true)
+  assert.ok(report.improvements.length >= 1)
+
+  const state = await call(built, 'GET', '/dsh-daily/state')
+  assert.equal(state.body.status.lastError, undefined, 'a recovered run is not a failure')
+
+  // The retry must ask for something that fits, not repeat the same request.
+  assert.equal(built.prompts.length, 2)
+  const second = built.prompts[1].messages[0].content[0].text
+  assert.ok(second.includes('截断'), 'the retry names what went wrong')
+  assert.ok(second.includes('最多 4 个'), 'the retry asks for fewer items: ' + second.slice(-400))
+})
+
+test('when the retry is worse, the salvaged first reply is what survives', async () => {
+  const built = setup({
+    replies: [truncatedGoodReply(), '{"improvements":[]}'],
+    finishKinds: ['max-tokens', 'stop'],
+  })
+  await runAndWait(built)
+
+  const report = readReport(built)
+  assert.equal(report.salvaged, true)
+  assert.equal(report.truncated, true)
+  assert.equal(report.improvements.length, 2, 'the two finished items are kept')
+  assert.equal(report.improvements[0].basedOn, 'acme/dsh-alpha')
+
+  // Salvaged content is real, so the run is not reported as a failure — but the
+  // truncation is recorded rather than hidden behind a full-looking report.
+  const state = await call(built, 'GET', '/dsh-daily/state')
+  assert.equal(state.body.status.lastError, undefined)
+  assert.equal(state.body.today.truncated, true)
+})
+
+test('a truncation that recovers nothing is still an honest failure', async () => {
+  const built = setup({
+    replies: ['{"improvements":[', '{"improvements":['],
+    finishKinds: ['max-tokens', 'max-tokens'],
+  })
+  await runAndWait(built)
+  const state = await call(built, 'GET', '/dsh-daily/state')
+  assert.equal(state.body.today.parsed, false)
+  assert.equal(state.body.today.improvements.length, 0)
+  assert.ok(state.body.status.lastError.includes('max-tokens'))
+  assert.ok(state.body.status.lastError.includes('maxTokens'), 'and says what to do about it')
+})
+
+test('a complete reply is not retried and is not marked truncated', async () => {
+  const built = setup()
+  await runAndWait(built)
+  assert.equal(built.prompts.length, 1)
+  const report = readReport(built)
+  assert.equal(report.truncated, false)
+  assert.equal(report.salvaged, false)
+})
+
+test('the state echoes maxTokens, because it is the knob that fixes a truncation', async () => {
+  const built = setup()
+  const state = await call(built, 'GET', '/dsh-daily/state')
+  assert.equal(state.body.config.maxTokens, 16000)
 })
 
 test('an idea proposed once is fed back so it is not proposed again', async () => {

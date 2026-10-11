@@ -39,6 +39,9 @@ module.exports = [
   '.dd-badge.dd-warn{background:color-mix(in srgb,#d97706 16%,transparent);color:color-mix(in srgb,#d97706 82%,currentColor);border-color:color-mix(in srgb,#d97706 32%,transparent)}',
   '.dd-empty{opacity:.55;font-size:12px;padding:8px 0}',
   '.dd-err{border:1px solid color-mix(in srgb,#dc2626 50%,transparent);background:color-mix(in srgb,#dc2626 8%,transparent);border-radius:8px;padding:8px 10px;font-size:12px}',
+  // Amber, not red: a truncated reply is partly usable, which is a different
+  // thing from a generation that failed.
+  '.dd-warn{border:1px solid color-mix(in srgb,#d97706 48%,transparent);background:color-mix(in srgb,#d97706 8%,transparent);border-radius:8px;padding:8px 10px;font-size:12px}',
   '.dd-notes{font-size:12px;opacity:.8;font-style:italic}',
   '.dd-hist{display:flex;gap:8px;flex-wrap:wrap;font-size:12px}',
   '.dd-hist span{border:1px solid color-mix(in srgb,currentColor 12%,transparent);border-radius:6px;padding:2px 8px;opacity:.8}',
