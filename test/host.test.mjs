@@ -110,7 +110,7 @@ function setup(options) {
 
   // Mutable so a test can change the world mid-run, e.g. make a root agent
   // appear after an approval was queued with none.
-  const flags = { noAgent: opts.noAgent === true, registerThrows: opts.registerThrows === true }
+  const flags = { noAgent: opts.noAgent === true, registerThrows: opts.registerThrows === true, createThrows: opts.createThrows === true }
 
   const webServer = {
     register: function (spec) {
@@ -155,12 +155,50 @@ function setup(options) {
     followup: function (message) { followups.push(message) },
   }
 
+  // A hand-off now OPENS A NEW SESSION instead of borrowing a live one, so the
+  // stub records what was created and what that brand-new session was told.
+  const created = []
+  const createdFollowups = []
+  let createCount = 0
+  const agentsService = {
+    roots: function () { return flags.noAgent ? [] : [agent] },
+    create: function (options) {
+      if (flags.createThrows) throw new Error('cannot open a session')
+      createCount += 1
+      const fresh = {
+        id: 'agent-new-' + createCount,
+        sessionId: 'session-new-' + createCount,
+        followup: function (message) { createdFollowups.push(message) },
+      }
+      created.push({ options: options, agent: fresh })
+      return Promise.resolve({ agent: fresh, sessionId: fresh.sessionId })
+    },
+  }
+
   const services = {
     llm: opts.noLlm ? undefined : llm,
     agentDefaultModel: {
       currentSelection: function () { return { provider: 'test-provider', model: 'test-model', reasoningEffort: 'medium' } },
     },
-    agents: { roots: function () { return flags.noAgent ? [] : [agent] } },
+    agents: agentsService,
+  }
+
+  // The plugin prefers the session controller when the composition has one,
+  // because that is the GUI's own route into a workspace-attached session. Most
+  // of the older tests exercise the agent-factory path, so it is opt-in here.
+  const ctrlCreated = []
+  const ctrlPrompted = []
+  if (opts.sessionController === true) {
+    services.sessionController = {
+      create: async function (request) {
+        ctrlCreated.push(request)
+        return { sessionId: 'session-ctrl-1' }
+      },
+      prompt: async function (request) { ctrlPrompted.push(request); return { accepted: true } },
+    }
+    if (opts.workspacePath !== undefined) {
+      services.workspaceRegistry = { list: function () { return [{ id: 'ws-1', path: opts.workspacePath }] } }
+    }
   }
 
   const ctx = {
@@ -197,7 +235,8 @@ function setup(options) {
   return {
     home: home, dataDir: dataDir, corpusPath: corpusPath, routes: routes, effects: effects,
     listeners: listeners, timers: timers, cleared: cleared, prompts: prompts, followups: followups,
-    agent: agent, flags: flags,
+    agent: agent, flags: flags, created: created, createdFollowups: createdFollowups,
+    ctrlCreated: ctrlCreated, ctrlPrompted: ctrlPrompted,
   }
 }
 
@@ -537,7 +576,11 @@ test('approving an idea hands over the new-direction contract', async () => {
   const result = await call(built, 'POST', '/dsh-daily/approve', { title: 'dsh-queue' })
   assert.equal(result.status, 200)
   assert.equal(result.body.delivered, true)
-  const text = built.followups[0].content[0].text
+  // A new session, not the one that was already open.
+  assert.equal(built.created.length, 1)
+  assert.equal(built.followups.length, 0, 'the already-open session must be left alone')
+  assert.equal(result.body.sessionId, 'session-new-1')
+  const text = built.createdFollowups[0].content[0].text
   assert.ok(text.includes('## 已批准的方向'))
   assert.ok(text.includes('dsh-queue'))
   // Same hard gates as an improvement.
@@ -555,14 +598,18 @@ test('approving an unknown target is refused', async () => {
 })
 
 test('approving an improvement hands it over with the hard gates attached', async () => {
-  const built = setup()
+  const built = setup({ config: { projectsRoot: 'D:\\Projects' } })
   await runAndWait(built)
   const result = await call(built, 'POST', '/dsh-daily/approve', { title: 'dsh-prepush-guard' })
   assert.equal(result.status, 200)
   assert.equal(result.body.ok, true)
   assert.equal(result.body.delivered, true)
-  assert.equal(built.followups.length, 1)
-  const text = built.followups[0].content[0].text
+  assert.equal(built.created.length, 1)
+  assert.equal(built.createdFollowups.length, 1)
+  // The new session is rooted where the work happens, and named after the item.
+  assert.equal(built.created[0].options.cwd, 'D:\\Projects')
+  assert.equal(result.body.title, 'dsh-prepush-guard')
+  const text = built.createdFollowups[0].content[0].text
   assert.ok(text.includes('[DAILY APPROVAL]'))
   assert.ok(text.includes('dsh-prepush-guard'))
   assert.ok(text.includes('原版（别人已发布的）：acme/dsh-alpha'))
@@ -579,51 +626,58 @@ test('approving by its source repo hands over the same contract', async () => {
   await runAndWait(built)
   const result = await call(built, 'POST', '/dsh-daily/approve', { basedOn: 'acme/dsh-alpha' })
   assert.equal(result.body.delivered, true)
-  const text = built.followups[0].content[0].text
+  const text = built.createdFollowups[0].content[0].text
   assert.ok(text.includes('独立实现，不要 fork'))
   assert.ok(text.includes('原版（别人已发布的）：acme/dsh-alpha'))
 })
 
-test('an approval with no live session is recorded as undelivered instead of lost', async () => {
-  const built = setup({ noAgent: true })
+test('with a session controller the window is attached to the project workspace', async () => {
+  const built = setup({
+    sessionController: true,
+    workspacePath: 'D:\\Projects',
+    config: { projectsRoot: 'D:\\Projects' },
+  })
+  await runAndWait(built)
+  const result = await call(built, 'POST', '/dsh-daily/approve', { title: 'dsh-prepush-guard' })
+  assert.equal(result.body.spawned, true)
+  assert.equal(result.body.sessionId, 'session-ctrl-1')
+  // Same call the GUI's own 「新会话」 button makes: workspaceId, not cwd.
+  assert.deepEqual(built.ctrlCreated, [{ workspaceId: 'ws-1' }])
+  assert.equal(built.ctrlPrompted.length, 1)
+  assert.equal(built.ctrlPrompted[0].mode, 'queue')
+  assert.ok(built.ctrlPrompted[0].content[0].text.includes('独立实现，不要 fork'))
+  assert.equal(built.created.length, 0, 'the factory must not be used when the controller worked')
+})
+
+test('a second click on the same item does not open a second window', async () => {  const built = setup()
+  await runAndWait(built)
+  const first = await call(built, 'POST', '/dsh-daily/approve', { title: 'dsh-prepush-guard' })
+  const second = await call(built, 'POST', '/dsh-daily/approve', { title: 'dsh-prepush-guard' })
+  assert.equal(first.body.spawned, true)
+  assert.equal(second.body.spawned, true)
+  assert.equal(second.body.replayed, true)
+  assert.equal(built.created.length, 1, 'a double click must cost one session, not two')
+  assert.equal(built.createdFollowups.length, 1)
+})
+
+test('a failure to open a session is reported, never retried behind the user', async () => {
+  const built = setup({ createThrows: true })
   await runAndWait(built)
   const result = await call(built, 'POST', '/dsh-daily/approve', { title: 'dsh-prepush-guard' })
   assert.equal(result.body.ok, true)
+  assert.equal(result.body.spawned, false)
   assert.equal(result.body.delivered, false)
-  assert.equal(result.body.reason, 'no-live-session')
-  assert.equal(built.followups.length, 0)
-
-  const state = await call(built, 'GET', '/dsh-daily/state')
-  assert.equal(state.body.status.pending, 1)
-  assert.equal(state.body.approvals[0].delivered, false)
-})
-
-test('a pending approval is retried when a root agent appears', async () => {
-  const built = setup({ noAgent: true })
-  await runAndWait(built)
-  await call(built, 'POST', '/dsh-daily/approve', { title: 'dsh-prepush-guard' })
-
-  const created = built.listeners.find(function (item) { return item.name === 'agent/created' })
-  assert.ok(created !== undefined, 'must listen for agent/created to retry approvals')
-
-  // A session appears, so the same approval can now be handed over.
-  built.flags.noAgent = false
-  created.fn()
-  await waitFor(function () { return built.followups.length === 1 ? true : false }, 'the retry to deliver')
+  assert.ok(String(result.body.reason).startsWith('create-failed'))
+  assert.equal(built.createdFollowups.length, 0)
 
   const state = await call(built, 'GET', '/dsh-daily/state')
   assert.equal(state.body.status.pending, 0)
-  assert.equal(state.body.approvals[0].delivered, true)
-})
-
-test('a busy agent leaves the approval queued', async () => {
-  const built = setup({ agentBusy: true })
-  await runAndWait(built)
-  const result = await call(built, 'POST', '/dsh-daily/approve', { title: 'dsh-prepush-guard' })
-  assert.equal(result.body.delivered, false)
-  assert.equal(result.body.reason, 'busy')
-  const state = await call(built, 'GET', '/dsh-daily/state')
-  assert.equal(state.body.status.pending, 1)
+  assert.equal(state.body.approvals[0].delivered, false)
+  assert.equal(
+    built.listeners.find(function (item) { return item.name === 'agent/created' }),
+    undefined,
+    'there is nothing left to retry, so the plugin must not listen for new agents',
+  )
 })
 
 test('skipping a plugin removes it from future pools', async () => {
@@ -689,7 +743,7 @@ test('with no local template configured the approval contract still describes th
   const built = setup()
   await runAndWait(built)
   await call(built, 'POST', '/dsh-daily/approve', { title: 'dsh-prepush-guard' })
-  const text = built.followups[0].content[0].text
+  const text = built.createdFollowups[0].content[0].text
   assert.ok(text.includes('零依赖构建'))
   assert.ok(text.includes('cordis.patch.yml'))
   assert.ok(!text.includes('dsh-warden'), 'must not point at a template that may not exist')

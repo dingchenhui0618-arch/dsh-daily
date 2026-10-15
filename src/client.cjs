@@ -186,14 +186,21 @@ function DailyView() {
 
   function approve(target) {
     const label = target.title || target.basedOn
+    // Cheap double-click guard: the host is idempotent, but not flashing the
+    // button is what keeps two clicks from looking like two different actions.
+    if (busy !== '') return
     setBusy(label)
     setNote('')
     post('approve', target).then(function (result) {
       setBusy('')
       if (result && result.ok) {
-        setNote(result.delivered
-          ? '已投递给当前会话，agent 会独立实现并发布到你自己的仓库。'
-          : '已记录，但没能投递（' + (result.reason || '无活跃会话') + '）。等会话空闲后会自动重试。')
+        if (result.spawned) {
+          setNote((result.replayed ? '已经开过窗口了：' : '已新建窗口 ') + (result.title || label)
+            + (result.sessionId ? '（' + result.sessionId + '）' : '')
+            + '，agent 会在那个窗口里独立实现并发布到你自己的仓库。')
+        } else {
+          setNote('没能新建窗口：' + (result.reason || '未知原因') + '。再点一次可以在同样的条件下重试。')
+        }
       } else {
         setNote('批准失败：' + ((result && (result.error || result.reason)) || '未知错误'))
       }

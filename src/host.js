@@ -19,10 +19,14 @@ import { loadCorpus } from './corpus.js'
 import { selectCandidates } from './select.js'
 import { buildProfileBrief, loadProfileSources } from './profile.js'
 import { buildReportPrompt, parseReportJson, salvageReport, validateReport } from './report.js'
-import { buildApprovalMessage, deliverToAgent } from './deliver.js'
+import { buildApprovalMessage } from './deliver.js'
+import { sessionTitleFor, spawnSession } from './spawn.js'
 import { dayKey, missedToday, msUntilNext } from './schedule.js'
 
 export const name = 'dsh-daily'
+// `agents` is deliberately NOT injected: the service is looked up defensively
+// through ctx.get() at approval time, so a composition without it (or a rename
+// upstream) degrades to a reported refusal instead of blocking plugin load.
 export const inject = ['timer', 'webServer']
 
 const DEFAULT_CONFIG = {
@@ -166,7 +170,6 @@ export function apply(ctx, config) {
   const ideaTitles = persisted.ideaTitles.slice(-IDEA_TITLES_KEEP)
   const history = persisted.history
   const approvals = persisted.approvals
-  const pending = []
 
   let running = false
   let lastError
@@ -531,19 +534,61 @@ export function apply(ctx, config) {
     }
   }
 
-  async function deliver(idea, label) {
-    const text = buildApprovalMessage(idea, { projectsRoot: projectsRoot, templateRoot: templateRoot })
-    const outcome = await deliverToAgent(ctx.get('agents'), text, { plugin: 'daily' })
+  // Clicking 「做这个」 OPENS A NEW SESSION named after the item and starts it on
+  // the build contract. It deliberately does not touch the session the user is
+  // currently working in: the contract is long, it belongs to its own window,
+  // and the finished work should not be tangled with unrelated history.
+  //
+  // Re-clicking the same item is a no-op that replays the previous outcome. Two
+  // clicks inside a second used to deliver the whole contract twice and burn a
+  // full development round on a duplicate session, so the guard is part of the
+  // contract here rather than left to the GUI's disabled button.
+  async function spawnFor(item, label) {
+    const title = sessionTitleFor(item)
+    const replayed = approvals.find(function (entry) {
+      return entry.title === title && entry.spawned === true
+    })
+    if (replayed !== undefined) {
+      return {
+        spawned: true,
+        replayed: true,
+        sessionId: replayed.sessionId,
+        title: title,
+        delivered: true,
+        reason: '',
+      }
+    }
+
+    const contract = buildApprovalMessage(item, { projectsRoot: projectsRoot, templateRoot: templateRoot })
+    const outcome = await spawnSession(
+      {
+        // The session controller is the GUI's own route into a workspace-attached
+        // session, so it is preferred; the agent factory is the fallback. Both are
+        // looked up defensively: an older composition without either must report a
+        // refusal, not fail to load.
+        sessionController: ctx.get('sessionController'),
+        agents: ctx.get('agents'),
+        workspaceRegistry: ctx.get('workspaceRegistry'),
+        sessions: ctx.get('sessions'),
+        titles: ctx.get('sessionTitle'),
+        model: currentSelection(),
+      },
+      { item: item, contract: contract, cwd: projectsRoot, plugin: 'daily' },
+    )
+
     const record = {
       at: Date.now(),
       label: label,
-      title: String(idea.title || ''),
-      delivered: outcome.delivered === true,
+      title: title,
+      spawned: outcome.spawned === true,
+      via: outcome.via === undefined ? '' : String(outcome.via),
+      sessionId: outcome.sessionId === undefined ? '' : String(outcome.sessionId),
+      // Kept for the existing state file and for the panel's own wording.
+      delivered: outcome.spawned === true,
       reason: outcome.reason === undefined ? '' : String(outcome.reason),
     }
     approvals.push(record)
     while (approvals.length > 50) approvals.shift()
-    if (!record.delivered) pending.push({ idea: idea, label: label, text: text })
     try {
       if (ensureDir(dataDir)) appendFileSync(approvalsPath, JSON.stringify(record) + '\n')
     } catch (error) {
@@ -577,28 +622,11 @@ export function apply(ctx, config) {
     return undefined
   }
 
-  // An approval made while the session was busy stays queued and is retried the
-  // moment a root agent appears, mirroring how a shipped reminder waits for a
-  // live owner instead of being dropped.
-  async function retryPending() {
-    if (pending.length === 0) return
-    const stillWaiting = []
-    for (const item of pending) {
-      const outcome = await deliverToAgent(ctx.get('agents'), item.text, { plugin: 'daily' })
-      if (outcome.delivered === true) {
-        const record = approvals.find(function (entry) { return entry.title === String(item.idea.title || '') && !entry.delivered })
-        if (record !== undefined) {
-          record.delivered = true
-          record.reason = ''
-        }
-      } else {
-        stillWaiting.push(item)
-      }
-    }
-    pending.length = 0
-    for (const item of stillWaiting) pending.push(item)
-    saveState()
-  }
+  // There is no retry queue any more, and its absence is the point: the old path
+  // had to wait for an idle root session because it borrowed one. A new session
+  // has nothing to wait for, so a failure is reported to the user instead of
+  // being retried behind their back — retrying automatically could open a second
+  // window for an item that already got one.
 
   function disarm(t) {
     if (t === undefined) return
@@ -636,10 +664,6 @@ export function apply(ctx, config) {
     const newest = history[history.length - 1].date
     today = loadReport(newest)
   }
-
-  ctx.on('agent/created', function () {
-    retryPending().then(function () {}, function () {})
-  })
 
   arm()
   armCatchUp()
@@ -690,7 +714,10 @@ export function apply(ctx, config) {
                   nextRunAt: nextRunAt,
                   lastError: lastError,
                   seen: seen.length,
-                  pending: pending.length,
+                  // Historical name kept so an older client half still reads a
+                  // number: nothing queues any more, because opening a new
+                  // session never has to wait for an idle one.
+                  pending: 0,
                 },
                 today: report,
                 history: history.slice(-12).reverse(),
@@ -719,8 +746,16 @@ export function apply(ctx, config) {
                 sendJson(res, 404, { error: 'unknown-approval-target' })
                 return
               }
-              const record = await deliver(found.item, found.label)
-              sendJson(res, 200, { ok: true, delivered: record.delivered, reason: record.reason, title: record.title })
+              const record = await spawnFor(found.item, found.label)
+              sendJson(res, 200, {
+                ok: true,
+                spawned: record.spawned,
+                replayed: record.replayed === true,
+                sessionId: record.sessionId || '',
+                delivered: record.delivered,
+                reason: record.reason,
+                title: record.title,
+              })
               return
             }
             if (method === 'skip') {

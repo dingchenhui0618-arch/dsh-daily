@@ -78,11 +78,23 @@ dsh plugin --profile <name> add <插件目录>
 ## 用
 
 - **立即生成** —— 不用等 11:00，随时手动跑一次。
-- **改进项的「做这个」** —— 批准一条改进，把它投给当前会话。
-- **灵感的「做这个」** —— 批准一个新方向，投递的是另一套框架（说明这是生态里还没有的东西）。
+- **改进项的「做这个」** —— 批准一条改进，**新建一个窗口**去做。
+- **灵感的「做这个」** —— 批准一个新方向，同样新建窗口，投递的是另一套框架（说明这是生态里还没有的东西）。
 - **「不感兴趣」** —— 把这条的来源记进 seen，以后不再出现。
 
-点下去之后，插件**不自己开发**。它把一条消息投递给当前活跃的会话（`ctx.agents.roots()` + `agent.runMaintenance()` + `agent.followup()`，和官方 `dsh-schedule` 投递提醒用的是同一条通路），agent 拿自己的常规工具去干活。
+点下去之后，插件**不自己开发，也不往你当前这个会话里塞东西**。它按项目名新建一个会话（`dsh-xxx`），把交付契约当第一条消息投进去，那个窗口立刻开始干活。
+
+新建走的是 GUI 自己「新会话」的同一条宿主路径：
+
+1. `ctx.sessionController.create({ workspaceId })` —— 和界面上点「新会话」落到的是同一个函数，所以会话**附在你的项目工作区分组里**，不会掉进「未分组」；按路径找不到登记的工作区时退回 `{ cwd }`。
+2. 然后 `sessionController.prompt({ sessionId, mode: 'queue', content })` 投第一条消息。这一步是必须的：全新会话是 `blank` 状态，侧边栏不画 blank 行，只有真起了一轮 turn 它才可见——**只建会话不发消息等于什么都没发生**。
+3. 再把标题钉成项目名（`sessionController.rename({ sessionId, title })`，写一条 `user` 来源的 `session/title` 事件），免得自动命名和你要的名字不一致。
+
+第一条契约消息以**用户轮次**（`source.kind: 'user'`）投递，因为点「做这个」的人就是你。老的 `{ kind: 'plugin', plugin }` 会被 v4 会话格式直接拒收；`plugin:<name>` 虽然能过落盘校验，但在这个版本里不是一等生产者、也不算人类轮次，会话活跃度与自动标题都不会认它。
+
+`ctx.sessionController` 不存在时退回 `ctx.agents.create({ cwd })` + `agent.followup()`。这条路一样能开窗、一样不用刷新页面，区别只是会话会落进「未分组」。
+
+**同一个条目点两次只会开一个窗口。** 批准接口是幂等的：同名条目已成功过就直接回放上次结果（`replayed: true`），不会开第二个窗口、也不会白跑一轮开发。开窗失败会如实报告原因（`create-failed: …`），**不会自动重试**——自动重试可能给同一个条目开出第二个窗口。
 
 投递的消息里写死了交付契约：
 
@@ -94,7 +106,7 @@ dsh plugin --profile <name> add <插件目录>
 6. 全过才用 `gh repo create <你自己的项目名> --public --source . --push` 建**你自己的**仓库
 7. 回报仓库 URL、测试通过数、commit hash、三步检查结果，以及**你和原版的具体差异**
 
-**没有活跃会话时，批准不会丢。** 它进 pending 队列，并在 `agent/created` 时自动重试——和官方提醒"等会话回来再投递"的行为一致。
+**改 host 半区要重启 app 才生效**（见上面「热更新」一节），改客户端半区刷新页面即可。
 
 ## 配置
 
@@ -146,6 +158,7 @@ HTTP 面（挂在 `webServer` 的 `/dsh-daily` 前缀下）：
 GET  /dsh-daily/state              配置、状态、当天日报、历史、批准记录
 POST /dsh-daily/run                立即生成（202，异步）
 POST /dsh-daily/approve            { title } 按项目名批准（改进项或灵感都行），或 { basedOn } 按来源批准
+                                   → { ok, spawned, replayed, sessionId, title, reason }
 POST /dsh-daily/skip               { repo } 不再出现
 ```
 
@@ -178,13 +191,13 @@ POST /dsh-daily/skip               { repo } 不再出现
 ## 开发
 
 ```sh
-node --test          # 143 个测试
+node --test          # 161 个测试
 node scripts/build.mjs
 ```
 
 零依赖构建：host 半区只 import `node:` 内置模块和同目录兄弟模块，所以复制 `src/*.js` 到 `lib/` 就是完整构建——没有会在安装时挂掉的 devDependency。client 半区是 CJS，构建时把唯一的相对 require（样式表）内联进去，然后用 `new Function()` 编译一次，并在浏览器之外直接 import `lib/index.js` 校验导出，坏构建在构建期就炸。
 
-测试用桩 Context 驱动真实的 `apply()`（`test/host.test.mjs`），跑的是真的排期、真的池子过滤、真的输出校验、真的持久化和真的投递，不是这些逻辑的复刻。`test/corpus.test.mjs` 里有一条直接跑真实 3727 条语料的用例。`test/client.test.mjs` 把客户端半区也拉进测试（只桩掉 React），管住 Tab 的注册契约和版本错配的判断方向。
+测试用桩 Context 驱动真实的 `apply()`（`test/host.test.mjs`），跑的是真的排期、真的池子过滤、真的输出校验、真的持久化和真的开窗投递，不是这些逻辑的复刻；`test/spawn.test.mjs` 单独管住开窗那几个会被用户直接看见的细节（窗口名、不动当前会话、双击只开一个窗口、找不到工作区时退回 `cwd`）。`test/corpus.test.mjs` 里有一条直接跑真实 3727 条语料的用例。`test/client.test.mjs` 把客户端半区也拉进测试（只桩掉 React），管住 Tab 的注册契约和版本错配的判断方向。
 
 ## License
 
