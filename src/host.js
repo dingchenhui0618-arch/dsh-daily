@@ -190,6 +190,29 @@ export function apply(ctx, config) {
     }
   }
 
+  // `sessionController.prompt` takes an AbortSignal and calls
+  // `signal.throwIfAborted()` on it without optional chaining, so a missing
+  // signal kills the hand-off *after* the window has already been created. That
+  // is exactly how the first live run failed.
+  //
+  // One plugin-scoped controller, not one per click: the signal's lifetime must
+  // outlive the HTTP request that triggered it (the request returns 202-style
+  // acknowledgement while the first turn is still starting), and it must be
+  // aborted only when the plugin unloads. A fresh controller per request would
+  // work too, but then nothing could cancel an in-flight prompt on unload.
+  let approvalAbort
+
+  function approvalSignal() {
+    if (approvalAbort === undefined || approvalAbort.signal.aborted) approvalAbort = new AbortController()
+    return approvalAbort.signal
+  }
+
+  ctx.effect(function () {
+    return function () {
+      if (approvalAbort !== undefined) approvalAbort.abort()
+    }
+  })
+
   function seedCorpusIfNeeded() {
     if (existsSync(corpusPath)) return
     if (typeof cfg.seedCorpus !== 'string' || !existsSync(cfg.seedCorpus)) return
@@ -572,6 +595,12 @@ export function apply(ctx, config) {
         sessions: ctx.get('sessions'),
         titles: ctx.get('sessionTitle'),
         model: currentSelection(),
+        // `sessionController.prompt` REQUIRES an AbortSignal — it calls
+        // `signal.throwIfAborted()` without optional chaining, so passing none
+        // fails after the window already exists. A plugin-scoped signal is the
+        // right lifetime: the first turn must survive the HTTP request that
+        // started it, and must be cancelled if the plugin unloads.
+        signal: approvalSignal(),
       },
       { item: item, contract: contract, cwd: projectsRoot, plugin: 'daily' },
     )

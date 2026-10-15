@@ -47,18 +47,21 @@ function stubController(options) {
   const opts = options || {};
   const created = [];
   const prompted = [];
+  const promptSignals = [];
   const renamed = [];
   return {
     created: created,
     prompted: prompted,
+    promptSignals: promptSignals,
     renamed: renamed,
     create: async function (request) {
       created.push(request);
       if (opts.createThrows !== undefined) throw opts.createThrows;
       return { sessionId: 'session-ctrl-' + created.length, agentPreset: 'cordis' };
     },
-    prompt: opts.noPrompt === true ? undefined : async function (request) {
+    prompt: opts.noPrompt === true ? undefined : async function (request, signal) {
       prompted.push(request);
+      promptSignals.push(signal);
       if (opts.promptThrows !== undefined) throw opts.promptThrows;
       return { accepted: true };
     },
@@ -254,6 +257,47 @@ test('a followup failure says the session exists but never started', async () =>
   // to know which one it is.
   assert.equal(outcome.sessionId, 'session-1');
   assert.ok(outcome.reason.startsWith('followup-failed'));
+});
+
+test('the controller prompt receives the caller-supplied abort signal', async () => {
+  // `sessionController.prompt(request, signal)` calls `signal.throwIfAborted()`
+  // without optional chaining. Omitting the signal fails AFTER the window has
+  // been created — the exact first live failure of this feature — so the signal
+  // is not optional plumbing and is pinned here.
+  const controller = stubController();
+  const signal = new AbortController().signal;
+  const outcome = await spawnSession(
+    { sessionController: controller, signal: signal },
+    { item: { title: 'dsh-queue' }, contract: 'x', cwd: D_PROJECTS },
+  );
+  assert.equal(outcome.spawned, true);
+  assert.equal(controller.promptSignals[0], signal);
+});
+
+test('a prompt failure keeps the created window id in the final report', async () => {
+  // The user has to be able to find and close a window that was created but
+  // never started, so the id survives even when the fallback also fails.
+  const controller = stubController({ promptThrows: new Error("Cannot read properties of undefined (reading 'throwIfAborted')") });
+  const agents = stubAgents({ throws: new Error('agent id "undefined" does not match session id "session-1"') });
+  const outcome = await spawnSession(
+    { sessionController: controller, agents: agents },
+    { item: { title: 'dsh-launch-card' }, contract: 'x', cwd: D_PROJECTS },
+  );
+  assert.equal(outcome.spawned, false);
+  assert.equal(outcome.sessionId, 'session-ctrl-1');
+  assert.ok(outcome.reason.includes('was created but never started'));
+});
+
+test('the factory path mints the session identity it is required to supply', async () => {
+  // `CreateAgentOptions.sessionId` is required at runtime; omitting it fails
+  // publication with `agent id "undefined" does not match session id "..."`.
+  const agents = stubAgents();
+  const outcome = await spawnSession(
+    { agents: agents },
+    { item: { title: 'dsh-queue' }, contract: 'x', cwd: D_PROJECTS },
+  );
+  assert.equal(outcome.spawned, true);
+  assert.match(String(agents.calls[0].sessionId), /^session-[0-9a-f-]{36}$/);
 });
 
 test('a cwd is only sent when one is configured', async () => {
