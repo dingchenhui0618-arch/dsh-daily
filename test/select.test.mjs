@@ -18,8 +18,74 @@ const ZERO_STATS = {
   droppedInstalled: 0,
   droppedSeen: 0,
   droppedDuplicate: 0,
+  ranked: 0,
   picked: 0,
 };
+
+test('popularity decides which entries of a category get the slots', () => {
+  const entries = [
+    mk('A', 'quiet', 'acme/quiet'),
+    mk('A', 'loud', 'acme/loud'),
+    mk('A', 'mid', 'acme/mid'),
+    mk('B', 'other', 'acme/other'),
+  ];
+  // Highest score first in the map's own terms, but the input order is the
+  // opposite, so only a score-aware selection can produce this output.
+  const scores = new Map([
+    [entries[0], 0.1],
+    [entries[1], 1],
+    [entries[2], 0.5],
+    [entries[3], 0.2],
+  ]);
+
+  const { picked, stats } = selectCandidates(entries, { scores, perCategory: 2, max: 10 });
+
+  assert.deepEqual(picked.map((e) => e.name), ['loud', 'other', 'mid']);
+  assert.equal(stats.ranked, 4);
+});
+
+test('an entry the market has no numbers for sorts behind measured ones', () => {
+  const entries = [mk('A', 'unmeasured', 'acme/unmeasured'), mk('A', 'measured', 'acme/measured')];
+  const scores = new Map([[entries[0], 0], [entries[1], 0.5]]);
+  const { picked } = selectCandidates(entries, { scores, perCategory: 1, max: 10 });
+  assert.deepEqual(picked.map((e) => e.name), ['measured']);
+});
+
+test('category coverage survives popularity weighting', () => {
+  // A category with one enormously popular entry must not take over the pool.
+  const entries = [
+    mk('Hot', 'mega', 'acme/mega'),
+    mk('Hot', 'also', 'acme/also'),
+    mk('Cold', 'quiet', 'acme/quiet'),
+  ];
+  const scores = new Map([[entries[0], 1], [entries[1], 0.9], [entries[2], 0.01]]);
+  const { picked } = selectCandidates(entries, { scores, perCategory: 1, max: 10 });
+  assert.deepEqual(picked.map((e) => e.category), ['Hot', 'Cold'], 'one slot each, not two from Hot');
+});
+
+test('equal scores keep the original order, so a run stays diffable', () => {
+  const entries = [mk('A', 'first', 'acme/first'), mk('A', 'second', 'acme/second')];
+  const scores = new Map([[entries[0], 0.4], [entries[1], 0.4]]);
+  const { picked } = selectCandidates(entries, { scores, perCategory: 2, max: 10 });
+  assert.deepEqual(picked.map((e) => e.name), ['first', 'second']);
+});
+
+test('a non-Map scores option is ignored rather than trusted', () => {
+  const entries = [mk('A', 'first', 'acme/first'), mk('A', 'second', 'acme/second')];
+  const { picked, stats } = selectCandidates(entries, { scores: { 'acme/second': 9 }, perCategory: 1, max: 10 });
+  assert.deepEqual(picked.map((e) => e.name), ['first'], 'no scores means the old order stands');
+  assert.equal(stats.ranked, 0);
+});
+
+test('installed and seen still win over popularity', () => {
+  // The installed lookup matches the entry NAME or the repo's last segment, so
+  // the installed entry has to be named the way a package is.
+  const entries = [mk('A', 'dsh-installed', 'acme/dsh-installed'), mk('A', 'keep', 'acme/keep')];
+  const scores = new Map([[entries[0], 1], [entries[1], 0.01]]);
+  const { picked, stats } = selectCandidates(entries, { scores, installed: ['dsh-installed'], perCategory: 1, max: 10 });
+  assert.deepEqual(picked.map((e) => e.name), ['keep']);
+  assert.equal(stats.droppedInstalled, 1);
+});
 
 test('installed matches through both the entry name and the last repo segment', () => {
   const entries = [

@@ -23,6 +23,26 @@ A daily brief for DeepSeek Harness. It reads the published plugin ecosystem agai
 
 两栏都会防重复：改进项按**来源仓库**记（同一来源不再出现），灵感按**标题**记并回灌进 prompt（同一方向不再重复提）。
 
+## 候选池来自市场，并且按真实热度排序
+
+改进项的价值取决于**靶子选得对不对**。所以候选池和排序都不再由本地快照决定：
+
+- **数据源是市场自己的目录**：`https://awesome-dsh-plugin.com/catalog.json`，也就是 app 里那个市场读的同一份文档。一次 GET 拿回全部条目，带分类、描述、下载量、star 数与收录日期。实测 2026-10-15：**4765 条、23 个分类、2444 条有下载量、3723 条有 star**，文档里最新一条是当天收录的。
+- **排序按热度，不是按行号**。每个分类里优先取**装的人最多**的那几个。原本按语料行序取，等于随机——本机实测同一份候选集，按热度选出来的 60 条下载量合计是不排序的 **46 倍**，中位数从 0 变成 25828，60 个名额里换掉了 58 个。
+- **提示词里带真实数字**，并且明确告知「候选已按热度排序、这些数字取自市场」。模型因此知道哪些插件真的有人在用，以及该往哪儿找缺口。
+- **没有数字就说没有**。市场没给某个条目下载量时它是 `—`，绝不按 0 处理：0 是「没人装过」，缺失是「市场没测到」，两句话不一样。报告里那条会显示 `无热门度数据`。
+- **分层降级，并且自己说出来**。取不到市场（离线、被墙、站点挂了）就回落到本地语料，此时**没有热度排序**，界面上会写明「候选（本地语料）」+ 一行警告；连语料也没有才报错。市场数据缓存到 `$DSH_HOME/daily/market-cache.json`，24 小时内不重复拉；**失败只记一次**（`attemptedAt` 单独记），所以离线一上午只付一次连接超时，而不是每次轮询都付。
+
+热度只有两个来源，且**下载量优先、star 只用来打平**。这不是随手定的：第一版把两个排名加权相加（`0.65×rank(下载) + 0.35×rank(star)`），结果当 star 数相同或缺失时 star 项会反压下载量——测试里三条都是 3★ 的条目，star 排名退化成文档顺序，直接把 5000 下载的条目压到 1 下载的下面。第二版还试过一个「字段完整度」加权项，实测在真实目录上它 100% 等价于「是否同时有下载量和 star」，同样是能反转主信号的假信号，所以删掉了。现在按 `(下载量, star)` 排序，主信号不可能被次信号掀翻。
+
+要人工核对一次：
+
+```sh
+node scripts/verify-market.mjs      # 拉真实目录，打印预筛结果、分类头名与 A/B 数字
+```
+
+它只读、只打印，不改任何数据。
+
 ## 为什么日报不全是开发工具
 
 这是踩过的一次坑。插件读的画像（agent 记忆 + 工作约定）通篇是工程纪律：证据边界、安全门、密钥扫描、开源同步。模型照实读，于是交回来的 8 条全是网关、台账和门禁——**这是正确行为，是画像把它塑造窄了。**
@@ -124,6 +144,8 @@ dsh plugin --profile <name> add <插件目录>
 | `profileName` | `desktop` | 读哪个 profile 的已装插件清单 |
 | `corpusPath` | `$DSH_HOME/daily/corpus.csv` | 语料。不存在时从 `seedCorpus` 复制一份 |
 | `seedCorpus` | 无 | 首次播种来源；不配就是空语料 |
+| `marketSource` | 市场 `catalog.json` | 热度数据源。指向镜像或固定副本时改这里 |
+| `marketTimeoutMs` | `20000` | 单次取目录的超时 |
 | `projectsRoot` | `~/Projects` | 交给 agent 的契约里，新工程建在哪 |
 | `templateRoot` | 无 | 骨架照抄哪个现成插件；不配时契约改为描述骨架要求 |
 
@@ -147,7 +169,9 @@ dsh plugin --profile <name> add <插件目录>
 
 | 路径 | 内容 |
 | --- | --- |
-| `$DSH_HOME/daily/corpus.csv` | 插件语料，插件自己持有一份 |
+| `$DSH_HOME/daily/corpus.csv` | 本地语料。**只在市场取不到时才作为候选池** |
+| `$DSH_HOME/daily/market-cache.json` | 上一次成功取回的市场目录（含 `fetchedAt` / `attemptedAt` / 文档里的最新收录日期） |
+| `$DSH_HOME/daily/market.json` | 最近一次市场读取的结论（状态、数据日期、带热度条目数、警告），面板直接读它，不再联网 |
 | `$DSH_HOME/daily/reports/YYYY-MM-DD.json` | 每天的完整日报（含每条的类型、丢弃统计与原始回复） |
 | `$DSH_HOME/daily/state.json` | seen（来源仓库）、提过的灵感标题、历史索引、批准记录 |
 | `$DSH_HOME/daily/approvals.jsonl` | 批准审计流水 |
@@ -155,8 +179,9 @@ dsh plugin --profile <name> add <插件目录>
 HTTP 面（挂在 `webServer` 的 `/dsh-daily` 前缀下）：
 
 ```
-GET  /dsh-daily/state              配置、状态、当天日报、历史、批准记录
+GET  /dsh-daily/state              配置、状态、当天日报、历史、批准记录、最近一次市场读取结论
 POST /dsh-daily/run                立即生成（202，异步）
+POST /dsh-daily/market             强制刷新市场目录（忽略 24 小时缓存）
 POST /dsh-daily/approve            { title } 按项目名批准（改进项或灵感都行），或 { basedOn } 按来源批准
                                    → { ok, spawned, replayed, sessionId, title, reason }
 POST /dsh-daily/skip               { repo } 不再出现
@@ -191,13 +216,14 @@ POST /dsh-daily/skip               { repo } 不再出现
 ## 开发
 
 ```sh
-node --test          # 161 个测试
+node --test          # 200 个测试
 node scripts/build.mjs
+node scripts/verify-market.mjs   # 需要联网：拿真实目录复核热度排序
 ```
 
 零依赖构建：host 半区只 import `node:` 内置模块和同目录兄弟模块，所以复制 `src/*.js` 到 `lib/` 就是完整构建——没有会在安装时挂掉的 devDependency。client 半区是 CJS，构建时把唯一的相对 require（样式表）内联进去，然后用 `new Function()` 编译一次，并在浏览器之外直接 import `lib/index.js` 校验导出，坏构建在构建期就炸。
 
-测试用桩 Context 驱动真实的 `apply()`（`test/host.test.mjs`），跑的是真的排期、真的池子过滤、真的输出校验、真的持久化和真的开窗投递，不是这些逻辑的复刻；`test/spawn.test.mjs` 单独管住开窗那几个会被用户直接看见的细节（窗口名、不动当前会话、双击只开一个窗口、找不到工作区时退回 `cwd`）。`test/corpus.test.mjs` 里有一条直接跑真实 3727 条语料的用例。`test/client.test.mjs` 把客户端半区也拉进测试（只桩掉 React），管住 Tab 的注册契约和版本错配的判断方向。
+测试用桩 Context 驱动真实的 `apply()`（`test/host.test.mjs`），跑的是真的排期、真的池子过滤、真的输出校验、真的持久化和真的开窗投递，不是这些逻辑的复刻；它默认注入一个必然失败的 fetch 替身，否则在有网的机器上测试会**真的去读市场目录**，每条语料断言都会随当天发布的插件漂移。`test/market.test.mjs` 管住热度信号：缺失的数字不许变成 0、不是目录的回复不许变成空池、刷新失败要回落缓存并说出数据日期、失败要记 `attemptedAt` 而不是假装刷新成功、只允许从 https 白名单主机取数。`test/spawn.test.mjs` 单独管住开窗那几个会被用户直接看见的细节（窗口名、不动当前会话、双击只开一个窗口、找不到工作区时退回 `cwd`）。`test/corpus.test.mjs` 里有一条直接跑真实 3727 条语料的用例。`test/client.test.mjs` 把客户端半区也拉进测试（只桩掉 React），管住 Tab 的注册契约和版本错配的判断方向。
 
 ## License
 

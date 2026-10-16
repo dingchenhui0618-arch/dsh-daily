@@ -176,6 +176,11 @@ function DailyView() {
   const report = data && data.today
   const status = (data && data.status) || {}
   const config = (data && data.config) || {}
+  // The last market read, and the one recorded in the report. Both are shown
+  // because they answer different questions: `market` is "can this machine reach
+  // the catalog right now", while `report.market` is "what did today's report
+  // actually use".
+  const market = data && data.market ? data.market : null
   const history = (data && data.history) || []
   const improvements = (report && report.improvements) || []
   const ideas = (report && report.ideas) || []
@@ -228,11 +233,22 @@ function DailyView() {
     skew.hostStale ? h('div', { className: 'dd-err' }, 'host 半区还是旧版本（改 host 要重启 app 才会加载）。重启后再看这里。') : null,
     skew.reportStale ? h('div', { className: 'dd-err' }, '这份日报是旧格式（host 更新之前生成的）。点「立即生成」重跑一次就有两栏了。') : null,
     status.lastError ? h('div', { className: 'dd-err' }, '上次生成失败：' + status.lastError) : null,
+    market && market.warning ? h('div', { className: 'dd-err' }, '热门度：' + market.warning) : null,
 
     h('div', { className: 'dd-bar' },
       h('div', null, '下次运行 ', h('b', null, clock(status.nextRunAt)), '（每日 ' + config.hour + ':' + pad(config.minute || 0) + '）'),
-      h('div', null, '语料 ', h('b', null, report && report.corpus ? report.corpus.total : '—')),
+      // Which pool actually fed the report is stated, not implied: a report built
+      // from the local CSV carries no popularity ordering, and looking identical
+      // to a ranked one is exactly how a degraded run would go unnoticed.
+      h('div', null, report && report.corpus && report.corpus.source === 'corpus' ? '候选（本地语料）' : '候选（市场）',
+        h('b', null, report && report.corpus ? report.corpus.total : '—')),
       h('div', null, '预筛 ', h('b', null, report && report.pool ? report.pool.size : '—')),
+      report && report.market ? h('div', null, '带热度 ',
+        h('b', null, report.market.ranked === undefined ? '—' : report.market.ranked),
+        report.market.sourceDate ? '（数据 ' + report.market.sourceDate + '）' : '') : null,
+      !report && market ? h('div', null, '市场数据 ',
+        h('b', null, market.sourceDate || market.status),
+        market.withDownloads === undefined ? '' : '（' + market.withDownloads + ' 条有下载量）') : null,
       h('div', null, '已推荐过 ', h('b', null, status.seen === undefined ? '—' : status.seen)),
       status.pending > 0 ? h('div', null, '待投递 ', h('b', null, status.pending)) : null,
       status.running ? h('div', null, h('span', { className: 'dd-spin' }, '◌'), ' 生成中') : null,

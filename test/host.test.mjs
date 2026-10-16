@@ -84,6 +84,11 @@ function fakeRes() {
 
 function setup(options) {
   const opts = options || {}
+  // Unless a test supplies its own market double, the host is given a fetch that
+  // always fails. Without this, a test run on a machine with a working network
+  // would silently read the real market catalog and every corpus expectation in
+  // this file would depend on what happened to be published that day.
+  const injected = opts.services === undefined ? { fetch: async function () { throw new Error('offline') } } : opts.services
   const home = mkdtempSync(join(tmpdir(), 'dsh-daily-host-'))
   const dataDir = join(home, 'daily')
   mkdirSync(dataDir, { recursive: true })
@@ -230,7 +235,9 @@ function setup(options) {
     writeFileSync(join(dataDir, 'config.json'), opts.localConfigRaw)
   }
 
-  apply(ctx, config)
+  // The caller passes the context and the test services, so a test can inject a
+  // fetch double instead of letting the host reach the real market.
+  apply(ctx, config, injected)
 
   return {
     home: home, dataDir: dataDir, corpusPath: corpusPath, routes: routes, effects: effects,
@@ -276,6 +283,68 @@ function readReport(built) {
 test('the plugin declares the name and services the harness expects', () => {
   assert.equal(name, 'dsh-daily')
   assert.deepEqual(inject, ['timer', 'webServer'])
+})
+
+/** A catalog.json body in the shape the market publishes, for the double below. */
+function catalogBody(items) {
+  return JSON.stringify({ install: 'x', market: 'y', items: items })
+}
+
+function catalogItem(slug, dl, tag) {
+  return {
+    cat: 'workflow', tag: tag || 'Workflow & Automation', dl: dl, stars: 5,
+    added: '2026-10-15', name: slug.split('/')[1], owner: slug.split('/')[0],
+    slug: slug, desc: 'Does a thing', npm: false, href: '/p/' + slug + '/',
+  }
+}
+
+test('the market catalog becomes the candidate pool, ordered by real downloads', async () => {
+  // Three entries in ONE category, written to the catalog worst-first so a run
+  // that ignored popularity would offer them in exactly that order.
+  const body = catalogBody([
+    catalogItem('acme/dsh-quiet', 1),
+    catalogItem('acme/dsh-loud', 900000),
+    catalogItem('acme/dsh-mid', 4000),
+  ])
+  const built = setup({
+    services: { fetch: async function () { return { status: 200, text: body } } },
+    config: { maxCandidates: 10, perCategory: 2 },
+  })
+  await runAndWait(built)
+
+  // perCategory is 2, so the third (least downloaded) never reaches the prompt.
+  assert.equal(built.prompts.length >= 1, true)
+  const prompt = built.prompts[0].messages[0].content[0].text
+  assert.ok(prompt.includes('acme/dsh-loud'), 'the most downloaded entry must be offered')
+  assert.ok(prompt.includes('acme/dsh-mid'), 'the second most downloaded entry must be offered')
+  assert.ok(!prompt.includes('acme/dsh-quiet'), 'the least downloaded must lose the slot to them')
+  assert.ok(prompt.indexOf('900,000 次下载') > 0, 'the real number is shown to the model')
+  assert.ok(prompt.includes('acme/dsh-quiet') === false)
+
+  const report = readReport(built)
+  assert.equal(report.corpus.source, 'market')
+  assert.equal(report.market.status, 'fresh')
+  assert.equal(report.market.sourceDate, '2026-10-15')
+  assert.equal(report.market.withDownloads, 3)
+  assert.equal(report.market.ranked, 3, 'every candidate carried a real popularity score')
+  assert.equal(report.corpus.total, 3)
+})
+
+test('a market failure falls back to the corpus and says which pool it used', async () => {
+  // setup() already injects a fetch that fails; this test is about what the
+  // report says afterwards, so a degraded run cannot look like a normal one.
+  const built = setup()
+  await runAndWait(built)
+  const report = readReport(built)
+  assert.equal(report.corpus.source, 'corpus', 'the CSV is the fallback pool')
+  assert.equal(report.market.status, 'unavailable')
+  assert.match(report.market.warning, /不可用/)
+  assert.equal(report.market.ranked, 0, 'no popularity ordering was applied')
+  assert.ok(report.improvements.length >= 1, 'the report is still produced')
+
+  const state = await call(built, 'GET', '/dsh-daily/state')
+  assert.equal(state.body.market.using, 'corpus')
+  assert.match(state.body.market.warning, /不可用/)
 })
 
 test('apply registers one route and arms a timer without throwing', () => {

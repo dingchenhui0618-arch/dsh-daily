@@ -91,8 +91,16 @@ export function buildReportPrompt(input) {
   const maxIdeas = input.maxIdeas || 3
   const pastIdeas = Array.isArray(input.pastIdeas) ? input.pastIdeas : []
 
+  // The popularity column is real data taken from the market catalog, and the
+  // list order is a consequence of it (see select.js). Both facts are stated
+  // rather than implied: a model that does not know the numbers are real will
+  // treat them as decoration, and one that does not know the order means
+  // something will keep picking from the top row of the alphabet.
   const rows = candidates.map(function (entry) {
-    return '- ' + entry.repo + ' | ' + entry.category + ' | ' + entry.name + ' | ' + oneLine(entry.desc, 220)
+    const popularity = typeof input.popularityOf === 'function'
+      ? input.popularityOf(entry)
+      : (entry.popularity === undefined ? '' : entry.popularity)
+    return '- ' + entry.repo + ' | ' + entry.category + ' | ' + entry.name + ' | ' + popularity + ' | ' + oneLine(entry.desc, 220)
   })
 
   return [
@@ -109,6 +117,11 @@ export function buildReportPrompt(input) {
     brief,
     '',
     '## 今天预筛出的候选（共 ' + candidates.length + ' 个，你只能从这里面挑）',
+    '',
+    '每行是：`repo | 分类 | 名字 | 安装热度 | 一句话描述`。**「安装热度」是从插件市场真实取到的**',
+    '（下载量 / star 数）；显示「无热门度数据」表示市场没有这个数字，**不是** 0。',
+    '候选**已按热度高的优先排**，越靠前说明装的人越多——**正在被大量使用的插件差在哪，比没人装过的',
+    '插件更值得改**。这是排序依据，不是让你只挑最热的那几个：分类之间是均衡的，别把名额全给 ui 和 tools。',
     '',
     rows.join('\n'),
     ...(pastIdeas.length > 0 ? [
@@ -166,7 +179,8 @@ export function buildReportPrompt(input) {
     '   `title`、`oneLiner`、`gap`、`evidence` 一个都不能空，`evidence` 规则同第 5 条。',
     '   想到什么写什么，不必凑数；但「给某个现有插件加个功能」属于 `improvements`，不要塞进 `ideas`。',
     '7. 两条产出的共同点：不是复刻别人的东西，是把想法落到**他能验收的**实现上。',
-    '8. 全部用中文。不许编造候选里没有的插件名、star 数、作者名或下载量。',
+    '8. 全部用中文。**star 数与下载量只能引用候选行里已经给出的数字**——没给就不许提，',
+    '   更不许自己编一个；插件名与作者名同理，只能来自候选。',
     '9. **`type` 必须分散。** 每条的 `type` 只能取：' + TYPES.join(' / ') + '。',
     '   这位用户的兴趣**不限于开发工具**——他自己写过一个德州扑克插件，候选里也有游戏、外观、',
     '   语音、趣味这些分类。**一份日报里至少覆盖 3 种 `type`，并且要主动去找游戏、趣味、外观、',

@@ -1,7 +1,7 @@
 {
   "name": "dsh-daily",
-  "version": "0.2.0",
-  "description": "Daily brief for DeepSeek Harness: every day at 11:00 it ranks the plugin ecosystem against your own profile, proposes a few buildable ideas with gap evidence, and turns one click into a published plugin repository.",
+  "version": "0.3.0",
+  "description": "Daily brief for DeepSeek Harness: every day at 11:00 it ranks the plugin market by real install counts and stars, proposes concrete deltas on the plugins people actually use plus directions nobody has built yet, and turns one click into a published plugin repository.",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
