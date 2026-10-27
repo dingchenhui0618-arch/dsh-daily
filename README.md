@@ -1,8 +1,16 @@
 # dsh-daily
 
+[![CI](https://github.com/dingchenhui0618-arch/dsh-daily/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/dingchenhui0618-arch/dsh-daily/actions/workflows/ci.yml)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 每天 11:00，把 DSH 插件生态筛一遍，产出两样东西：**在别人已发布的作品上往前走一步**的具体改法，以及**生态里还没有的新方向**；你点一下，agent 就独立实现一个版本，发到**你自己的**仓库。
 
 A daily brief for DeepSeek Harness. It reads the published plugin ecosystem against your own profile, proposes concrete deltas on other people's work plus directions nobody has built yet — and turns one click into an independently implemented repository, never a fork.
+
+> 用着还行的话，点个 ⭐ 就够了——插件市场的「搜插件」按 GitHub star 排序，star 是这个插件能被人翻到的唯一杠杆。
+
+安全模型——它把你的哪些画像发给模型、目录从哪来、点「做这个」之后会发生什么：
+[SECURITY.md](SECURITY.md)。
 
 ## 它解决什么
 
